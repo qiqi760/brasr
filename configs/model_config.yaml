@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────
+# GLCLAP Model Configuration
+# ─────────────────────────────────────────────
+
+text_encoder:
+  model_name: "bert-base-multilingual-uncased"
+  # Output hidden size from BERT: 768
+  # After average pooling over token dim → [B, 768]
+  freeze_layers: 0          # number of bottom BERT layers to freeze (0 = train all)
+
+audio_encoder:
+  # Data2Vec2.0-large compatible; swap model_name for the exact HF checkpoint.
+  # If using a privately pre-trained variant, point to local path.
+  model_name: "facebook/data2vec-audio-large-960h"
+  # The audio encoder outputs [B, T//4, hidden_size].
+  # hidden_size for data2vec-audio-large = 1024.
+  freeze_layers: 0
+
+projection:
+  # Project both text (768) and audio (1024) to a shared embedding space.
+  embed_dim: 512            # final joint embedding dimension D
+  # text_proj: Linear(768 → 512)
+  # audio_proj: Linear(1024 → 512)
+
+subtext:
+  # Subtext sampling strategy (see data/subtext.py)
+  min_words: 1              # minimum words in a subtext span
+  max_words: 5              # maximum words in a subtext span
+  # TODO: paper does not specify exact sampling algorithm;
+  #       current assumption: uniform random contiguous word span.

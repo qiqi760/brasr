@@ -1,0 +1,66 @@
+# ─────────────────────────────────────────────
+# GLCLAP Training Configuration
+# ─────────────────────────────────────────────
+
+# Datasets used (paper: WenetSpeech, Aishell, Gigaspeech, Librispeech)
+# Each entry: {manifest: path to jsonl/tsv, audio_root: path to audio files}
+datasets:
+  - name: "librispeech"
+    manifest: "data/manifests/librispeech_train.jsonl"
+    audio_root: "/path/to/librispeech"
+    language: "en"
+  - name: "gigaspeech"
+    manifest: "data/manifests/gigaspeech_train.jsonl"
+    audio_root: "/path/to/gigaspeech"
+    language: "en"
+  - name: "aishell"
+    manifest: "data/manifests/aishell_train.jsonl"
+    audio_root: "/path/to/aishell"
+    language: "zh"
+  - name: "wenetspeech"
+    manifest: "data/manifests/wenetspeech_train.jsonl"
+    audio_root: "/path/to/wenetspeech"
+    language: "zh"
+
+audio:
+  sample_rate: 16000        # Hz
+  n_mels: 128               # Mel filterbank bins (F)
+  n_fft: 1024
+  hop_length: 160           # 10 ms stride at 16 kHz
+  win_length: 400           # 25 ms window
+  max_duration_sec: 30.0    # clips longer than this are skipped/trimmed
+  # Input shape to audio encoder: [B, T, F] where T = frames, F = n_mels
+
+optimizer:
+  type: "AdamW"
+  lr: 5.0e-4                # paper: 5e-4
+  weight_decay: 1.0e-2
+  betas: [0.9, 0.98]
+
+scheduler:
+  type: "cosine_with_warmup"
+  warmup_steps: 2000
+  # total steps derived from epochs × steps_per_epoch
+
+training:
+  batch_size: 64            # paper: 64
+  num_epochs: 100           # paper: 100
+  early_stopping_patience: 5
+  grad_clip: 1.0
+  mixed_precision: true     # use torch.cuda.amp
+  seed: 42
+
+  # Temperature for InfoNCE contrastive loss
+  # TODO: paper does not specify; common default is 0.07
+  temperature: 0.07
+
+  # Logging / checkpointing
+  log_every_n_steps: 50
+  save_every_n_epochs: 5
+  output_dir: "outputs/glclap"
+
+inference:
+  # Similarity threshold for bias-word selection (Section 2.3)
+  # TODO: paper does not specify exact value; treat as tunable hyperparameter
+  similarity_threshold: 0.5
+  top_k: 10                 # max bias words to return
