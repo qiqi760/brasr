@@ -3,18 +3,33 @@
 # ─────────────────────────────────────────────
 
 text_encoder:
+  # ---------------------------------------------------------------------------
+  # model_name supports THREE forms:
+  #   1. HuggingFace Hub ID        : "bert-base-multilingual-uncased"
+  #   2. ModelScope ID             : "google-bert/bert-base-multilingual-uncased"
+  #   3. Absolute local path       : "/path/to/pretrained_models/bert-base-multilingual-uncased"
+  #
+  # For offline clusters without internet access:
+  #   - Download on a networked machine: ./scripts/download_models.sh --source modelscope
+  #   - Copy the downloaded folder to the cluster
+  #   - Set model_name to the local path below
+  #   - Optionally set env var: export TRANSFORMERS_OFFLINE=1
+  # ---------------------------------------------------------------------------
   model_name: "bert-base-multilingual-uncased"
   # Output hidden size from BERT: 768
   # After average pooling over token dim → [B, 768]
-  freeze_layers: 0          # number of bottom BERT layers to freeze (0 = train all)
+  freeze_layers: 999        # 999 = freeze ALL layers (only projection heads trained)
 
 audio_encoder:
-  # Data2Vec2.0-large compatible; swap model_name for the exact HF checkpoint.
-  # If using a privately pre-trained variant, point to local path.
+  # ---------------------------------------------------------------------------
+  # Same as text_encoder: HF Hub ID / ModelScope ID / local path are all valid.
+  # Default: "facebook/data2vec-audio-large-960h"
+  # ModelScope mirror also works:  modelscope download --model facebook/data2vec-audio-large-960h
+  # ---------------------------------------------------------------------------
   model_name: "facebook/data2vec-audio-large-960h"
   # The audio encoder outputs [B, T//4, hidden_size].
   # hidden_size for data2vec-audio-large = 1024.
-  freeze_layers: 0
+  freeze_layers: 999        # 999 = freeze ALL layers (only projection heads trained)
 
 projection:
   # Project both text (768) and audio (1024) to a shared embedding space.

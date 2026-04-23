@@ -74,6 +74,11 @@ class AudioEncoder(nn.Module):
 
     def _freeze_bottom_layers(self, n: int) -> None:
         """Freeze the CNN feature extractor and bottom-n transformer layers."""
+        total_layers = len(self.model.encoder.layers)
+        if n >= total_layers:
+            for param in self.model.parameters():
+                param.requires_grad = False
+            return
         for param in self.model.feature_extractor.parameters():
             param.requires_grad = False
         for param in self.model.feature_projection.parameters():

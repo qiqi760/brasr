@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from transformers import AutoTokenizer
 
 from .audio_utils import load_audio
@@ -223,6 +223,7 @@ def build_dataloader(
     max_subtext_length: int = 32,
     shuffle: bool = True,
     seed: Optional[int] = None,
+    distributed: bool = False,
 ) -> DataLoader:
     """
     Convenience factory: build a DataLoader for one dataset split.
@@ -262,10 +263,16 @@ def build_dataloader(
         max_subtext_length=max_subtext_length,
     )
 
+    sampler = None
+    if distributed:
+        sampler = DistributedSampler(dataset, shuffle=shuffle, seed=seed)
+        shuffle = False  # DistributedSampler handles shuffling
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        sampler=sampler,
         num_workers=num_workers,
         collate_fn=_collate,
         pin_memory=True,

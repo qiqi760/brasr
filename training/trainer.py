@@ -27,8 +27,10 @@ from pathlib import Path
 from typing import Optional
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch.cuda.amp import GradScaler, autocast
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
@@ -79,12 +81,15 @@ class Trainer:
         scheduler_type: str = "cosine_with_warmup",
         local_only: bool = False,
         device: str = "cuda",
+        rank: int = 0,
+        world_size: int = 1,
     ) -> None:
-        self.model = model.to(device)
+        self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        if rank == 0:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
         self.temperature = temperature
         self.num_epochs = num_epochs
         self.grad_clip = grad_clip
@@ -92,6 +97,9 @@ class Trainer:
         self.early_stopping_patience = early_stopping_patience
         self.local_only = local_only
         self.device = device
+        self.rank = rank
+        self.world_size = world_size
+        self.is_main = rank == 0
 
         # Optimizer
         self.optimizer = AdamW(
@@ -120,6 +128,12 @@ class Trainer:
     # Training loop
     # ──────────────────────────────────────────────────────────────────────
 
+    def _unwrap_model(self) -> GLCLAP:
+        """Return the underlying GLCLAP model (handles DDP wrapper)."""
+        if isinstance(self.model, DDP):
+            return self.model.module
+        return self.model
+
     def train(self, resume_from: Optional[str] = None) -> None:
         """
         Run the full training loop.
@@ -130,49 +144,57 @@ class Trainer:
         start_epoch = 0
         if resume_from is not None:
             start_epoch = load_checkpoint(
-                resume_from, self.model, self.optimizer, self.scheduler
+                resume_from, self._unwrap_model(), self.optimizer, self.scheduler
             )
-            logger.info(f"Resumed from {resume_from}, starting at epoch {start_epoch}")
+            if self.is_main:
+                logger.info(f"Resumed from {resume_from}, starting at epoch {start_epoch}")
 
         for epoch in range(start_epoch, self.num_epochs):
+            # Set epoch for DistributedSampler
+            if hasattr(self.train_loader.sampler, "set_epoch"):
+                self.train_loader.sampler.set_epoch(epoch)
+
             train_loss = self._train_epoch(epoch)
-            logger.info(f"Epoch {epoch+1}/{self.num_epochs}  train_loss={train_loss:.4f}")
+            if self.is_main:
+                logger.info(f"Epoch {epoch+1}/{self.num_epochs}  train_loss={train_loss:.4f}")
 
             val_loss = None
             if self.val_loader is not None:
                 val_loss = self._val_epoch(epoch)
-                logger.info(f"Epoch {epoch+1}/{self.num_epochs}  val_loss={val_loss:.4f}")
+                if self.is_main:
+                    logger.info(f"Epoch {epoch+1}/{self.num_epochs}  val_loss={val_loss:.4f}")
 
-            # Checkpointing
-            ckpt_path = self.output_dir / f"checkpoint_epoch{epoch+1:03d}.pt"
-            save_checkpoint(
-                path=ckpt_path,
-                model=self.model,
-                optimizer=self.optimizer,
-                scheduler=self.scheduler,
-                epoch=epoch + 1,
-                val_loss=val_loss,
-            )
-
-            # Early stopping (on val loss if available, else train loss)
-            monitor = val_loss if val_loss is not None else train_loss
-            if monitor < self._best_val_loss:
-                self._best_val_loss = monitor
-                self._patience_counter = 0
-                # Save best model separately
+            # Checkpointing (main process only)
+            if self.is_main:
+                ckpt_path = self.output_dir / f"checkpoint_epoch{epoch+1:03d}.pt"
                 save_checkpoint(
-                    path=self.output_dir / "best_model.pt",
-                    model=self.model,
+                    path=ckpt_path,
+                    model=self._unwrap_model(),
                     optimizer=self.optimizer,
                     scheduler=self.scheduler,
                     epoch=epoch + 1,
-                    val_loss=monitor,
+                    val_loss=val_loss,
                 )
-            else:
-                self._patience_counter += 1
-                if self._patience_counter >= self.early_stopping_patience:
-                    logger.info(f"Early stopping at epoch {epoch+1}.")
-                    break
+
+                # Early stopping (on val loss if available, else train loss)
+                monitor = val_loss if val_loss is not None else train_loss
+                if monitor < self._best_val_loss:
+                    self._best_val_loss = monitor
+                    self._patience_counter = 0
+                    # Save best model separately
+                    save_checkpoint(
+                        path=self.output_dir / "best_model.pt",
+                        model=self._unwrap_model(),
+                        optimizer=self.optimizer,
+                        scheduler=self.scheduler,
+                        epoch=epoch + 1,
+                        val_loss=monitor,
+                    )
+                else:
+                    self._patience_counter += 1
+                    if self._patience_counter >= self.early_stopping_patience:
+                        logger.info(f"Early stopping at epoch {epoch+1}.")
+                        break
 
     # ──────────────────────────────────────────────────────────────────────
     # Epoch-level helpers
@@ -228,7 +250,7 @@ class Trainer:
 
             total_loss += loss.item()
 
-            if step % 50 == 0:
+            if step % 50 == 0 and self.is_main:
                 logger.info(
                     f"  [E{epoch+1} S{step}] loss={loss.item():.4f} "
                     f"Lg={loss_dict['loss_global'].item():.4f} "

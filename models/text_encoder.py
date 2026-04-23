@@ -60,6 +60,12 @@ class TextEncoder(nn.Module):
 
     def _freeze_bottom_layers(self, n: int) -> None:
         """Freeze the embedding layer and bottom-n transformer blocks."""
+        # If n is large enough to cover all layers, freeze the entire encoder
+        total_layers = len(self.bert.encoder.layer)
+        if n >= total_layers:
+            for param in self.bert.parameters():
+                param.requires_grad = False
+            return
         # Freeze embeddings
         for param in self.bert.embeddings.parameters():
             param.requires_grad = False

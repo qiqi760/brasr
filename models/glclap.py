@@ -193,6 +193,7 @@ class GLCLAP(nn.Module):
                 .audio_global: [B, D]     — Ea  projected
                 .audio_local:  [B, T', D] — Ea' projected
         """
+        
         # ── Text branches (shared encoder weights) ──
         text_global  = self.encode_text(text_input_ids,    text_attention_mask)    # [B, D]
         text_local   = self.encode_text(subtext_input_ids, subtext_attention_mask) # [B, D]

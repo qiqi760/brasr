@@ -15,10 +15,14 @@ GLCLAP/
 │   ├── model_config.yaml      # encoder names, projection dim, subtext settings
 │   └── train_config.yaml      # datasets, optimizer, scheduler, training hyper-params
 │
-├── data/
+├── dataset/                   # Dataset code (was data/)
 │   ├── dataset.py             # GLCLAPDataset + collate_fn + build_dataloader
 │   ├── subtext.py             # random contiguous word-span sampling (Section 2.1)
 │   └── audio_utils.py         # waveform loading, Mel spectrogram extraction
+│
+├── data/                      # Actual data storage (task / dataset hierarchy)
+│   └── contrastive-learning/
+│       └── libri-960.jsonl    # Example manifest for contrastive-learning / libri-960
 │
 ├── models/
 │   ├── text_encoder.py        # BERT with masked mean pooling → [B, 768]
@@ -43,10 +47,15 @@ GLCLAP/
 │   ├── logging.py             # Logging setup
 │   └── checkpointing.py       # save/load checkpoint
 │
-├── scripts/
-│   ├── train.py               # Main training entry point
+├── python_scripts/
+│   ├── train.py               # Main training entry point (Python)
 │   ├── evaluate.py            # Batch evaluation (top-1 recall, F1)
 │   └── infer.py               # Single-file inference + prompt generation
+│
+├── scripts/
+│   ├── train.sh               # Bash wrapper for training
+│   ├── evaluate.sh            # Bash wrapper for evaluation
+│   └── infer.sh               # Bash wrapper for single-file inference
 │
 └── requirements.txt
 ```
@@ -128,46 +137,57 @@ pip install -r requirements.txt
 
 ### 2. Prepare manifests
 
-Create a JSONL file for each dataset split:
+Data is organised under `data/<task>/<dataset>.jsonl`. Create manifests for each split:
 ```json
 {"audio_path": "train-clean-100/1234/5678/1234-5678-0001.flac", "text": "have you ever heard taylor swift's songs"}
+```
+
+Example manifest location:
+```
+data/contrastive-learning/libri-960.jsonl
 ```
 
 ### 3. Train
 
 ```bash
-python scripts/train.py \
+./scripts/train.sh \
+    --task contrastive-learning \
+    --dataset libri-960 \
     --model_config configs/model_config.yaml \
     --train_config configs/train_config.yaml
 ```
 
 Train LCLAP (local-only ablation):
 ```bash
-python scripts/train.py --local_only
+./scripts/train.sh --task contrastive-learning --dataset libri-960 --local_only
 ```
 
 Resume from checkpoint:
 ```bash
-python scripts/train.py --resume outputs/glclap/checkpoint_epoch010.pt
+./scripts/train.sh \
+    --task contrastive-learning \
+    --dataset libri-960 \
+    --resume outputs/glclap/checkpoint_epoch010.pt
 ```
 
 ### 4. Evaluate
 
 ```bash
-python scripts/evaluate.py \
+./scripts/evaluate.sh \
+    --task contrastive-learning \
+    --dataset libri-960 \
     --checkpoint outputs/glclap/best_model.pt \
-    --manifest   data/manifests/aishell1_test_nt.jsonl \
-    --bias_list  data/bias_lists/aishell1_bias.txt \
-    --threshold  0.5
+    --bias_list data/bias_lists/libri_bias.txt \
+    --threshold 0.5
 ```
 
 ### 5. Infer (single file)
 
 ```bash
-python scripts/infer.py \
+./scripts/infer.sh \
     --checkpoint outputs/glclap/best_model.pt \
-    --audio      /path/to/audio.wav \
-    --bias_list  data/bias_lists/phonecall.txt
+    --audio /path/to/audio.wav \
+    --bias_list data/bias_lists/phonecall.txt
 ```
 
 ---
