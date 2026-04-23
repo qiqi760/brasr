@@ -175,8 +175,10 @@ def collate_fn(
     lengths = torch.tensor([w.shape[-1] for w in waveforms])   # [B]
     T_max = int(lengths.max().item())
     padded_waveforms = torch.zeros(len(waveforms), 1, T_max)   # [B, 1, T_max]
+    waveform_attention_mask = torch.zeros(len(waveforms), T_max, dtype=torch.long)
     for i, w in enumerate(waveforms):
         padded_waveforms[i, :, : w.shape[-1]] = w
+        waveform_attention_mask[i, : w.shape[-1]] = 1
 
     # Tokenise text (global branch)
     text_enc = tokenizer(
@@ -201,6 +203,7 @@ def collate_fn(
     return {
         "waveforms": padded_waveforms,                         # [B, 1, T_max]
         "waveform_lengths": lengths,                           # [B]
+        "waveform_attention_mask": waveform_attention_mask,    # [B, T_max]
         "text_input_ids": text_enc["input_ids"],               # [B, N]
         "text_attention_mask": text_enc["attention_mask"],     # [B, N]
         "subtext_input_ids": subtext_enc["input_ids"],         # [B, N']

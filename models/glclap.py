@@ -217,14 +217,12 @@ class GLCLAP(nn.Module):
                 subtext_input_ids, subtext_attention_mask
             )  # [B, D]
 
-            # Audio: encoder → local_emb [B, T', H] → pool over T' → [B, H] → proj → [B, D]
-            local_emb, _ = self.encode_audio(
+            # Audio: pooled global audio embedding [B, D]
+            audio_local = self.encode_audio(
                 waveform,
                 attention_mask=waveform_attention_mask,
-                pool=False,
-            )
-            pooled_emb = local_emb.mean(dim=1)               # [B, H]
-            audio_local = self.audio_proj(pooled_emb)        # [B, D]
+                pool=True,
+            )  # [B, D]
 
             return GLCLAPOutput(
                 text_local=text_local,    # [B, D]

@@ -18,7 +18,16 @@ Assumption (not fully specified in paper):
 from __future__ import annotations
 
 import random
+import re
 from typing import Optional
+
+
+def _split_words(text: str) -> list[str]:
+    """Split text into words. Falls back to character-level for CJK text."""
+    # CJK Unified Ideographs range: U+4E00–U+9FFF
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return list(text)
+    return text.split()
 
 
 def sample_subtext(
@@ -46,7 +55,7 @@ def sample_subtext(
     if rng is None:
         rng = random
 
-    words = text.split()
+    words = _split_words(text)
     n = len(words)
 
     if n <= min_words:

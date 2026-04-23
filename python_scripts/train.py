@@ -10,13 +10,18 @@ Usage:
         --model_config configs/model_config.yaml \
         --train_config configs/train_config.yaml \
         [--audio_root data/contrastive-learning/audio/] \
-        [--resume outputs/glclap/checkpoint_epoch010.pt]
+        [--resume outputs/glclap/checkpoint_epoch010.pt] \
+        [--output_dir exp/20250423-143022-libri-960-d2v-large-bert-multi-proj512-bs12/]
 """
 
 from __future__ import annotations
 
-import argparse
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+import argparse
+import datetime
+import re
 import sys
 from pathlib import Path
 
@@ -51,6 +56,60 @@ def _resolve_local_model(model_name: str) -> str:
     return model_name
 
 
+def _shorten_name(name: str) -> str:
+    """Shorten a HuggingFace model name for directory naming."""
+    name = name.replace("--", "/")
+    name = name.split("/")[-1]
+    # Common replacements
+    name = name.replace("bert-base-multilingual-uncased", "bert-multi")
+    name = name.replace("data2vec-audio-large-960h", "d2v-large")
+    name = name.replace("data2vec-audio-base-960h", "d2v-base")
+    name = name.replace("wav2vec2-large-960h", "w2v-large")
+    name = name.replace("wav2vec2-base-960h", "w2v-base")
+    name = name.replace("hubert-large-ls960-ft", "hubert-large")
+    name = name.replace("hubert-base-ls960", "hubert-base")
+    return name
+
+
+def _build_exp_name(
+    dataset: str,
+    model_cfg: dict,
+    train_cfg: dict,
+    local_only: bool,
+) -> str:
+    """Build an experiment directory name from key hyper-parameters."""
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    audio_name = _shorten_name(model_cfg["audio_encoder"]["model_name"])
+    text_name = _shorten_name(model_cfg["text_encoder"]["model_name"])
+    embed_dim = model_cfg["projection"]["embed_dim"]
+    batch_size = train_cfg["training"]["batch_size"]
+
+    freeze_txt = model_cfg["text_encoder"].get("freeze_layers", 0)
+    freeze_aud = model_cfg["audio_encoder"].get("freeze_layers", 0)
+
+    parts = [
+        ts,
+        dataset,
+        audio_name,
+        text_name,
+        f"proj{embed_dim}",
+        f"bs{batch_size}",
+    ]
+
+    # Add freeze info only when meaningful
+    if freeze_txt > 0 or freeze_aud > 0:
+        parts.append(f"freeze{freeze_aud}")
+
+    if local_only:
+        parts.append("local")
+
+    if model_cfg.get("detach_encoders", False):
+        parts.append("detach")
+
+    return "-".join(parts)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train GLCLAP")
     p.add_argument("--task", required=True, help="Task name, e.g. contrastive-learning")
@@ -67,6 +126,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--local_rank", type=int, default=-1,
                    help="Local rank for DistributedDataParallel (auto-set by torchrun)")
+    p.add_argument("--output_dir", default=None,
+                   help="Output directory for checkpoints and logs. "
+                        "If not set, an auto-generated name under exp/ is used.")
     return p.parse_args()
 
 
@@ -99,8 +161,20 @@ def main() -> None:
         rank = 0
         world_size = 1
 
-    output_dir = train_cfg["training"]["output_dir"]
+    # Determine output directory
+    if args.output_dir is not None:
+        output_dir = args.output_dir
+    else:
+        exp_name = _build_exp_name(
+            dataset=args.dataset,
+            model_cfg=model_cfg,
+            train_cfg=train_cfg,
+            local_only=args.local_only,
+        )
+        output_dir = f"exp/{exp_name}"
+
     if rank == 0:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
         setup_logging(log_dir=output_dir)
 
     # ── Build data paths from task + dataset ─────────────────────────────
@@ -132,8 +206,24 @@ def main() -> None:
         distributed=distributed,
     )
 
-    # TODO: supply a separate validation manifest for early stopping
+    # Validation loader (optional)
+    val_manifest_path = f"data/{args.task}/{args.dataset}-dev.jsonl"
     val_loader = None
+    if os.path.exists(val_manifest_path):
+        val_loader = build_dataloader(
+            manifest_path=val_manifest_path,
+            tokenizer=tokenizer,
+            audio_root=audio_root,
+            batch_size=train_cfg["training"]["batch_size"],
+            num_workers=4,
+            sample_rate=train_cfg["audio"]["sample_rate"],
+            max_duration_sec=train_cfg["audio"]["max_duration_sec"],
+            min_words=model_cfg["subtext"]["min_words"],
+            max_words=model_cfg["subtext"]["max_words"],
+            shuffle=False,
+            seed=train_cfg["training"]["seed"],
+            distributed=distributed,
+        )
 
     # ── Model ────────────────────────────────────────────────────────────
     model = GLCLAP(

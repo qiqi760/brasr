@@ -157,7 +157,8 @@ data/contrastive-learning/libri-960.jsonl
     --train_config configs/train_config.yaml
 ```
 
-Train LCLAP (local-only ablation):
+Train with simplified local-only contrastive learning (close global branches;
+subtext [B,D] vs pooled audio [B,D]):
 ```bash
 ./scripts/train.sh --task contrastive-learning --dataset libri-960 --local_only
 ```

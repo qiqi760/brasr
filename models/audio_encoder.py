@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from transformers import Data2VecAudioModel, AutoFeatureExtractor
+from transformers import Data2VecAudioModel
 
 
 class AudioEncoder(nn.Module):

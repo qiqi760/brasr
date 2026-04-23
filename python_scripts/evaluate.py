@@ -85,6 +85,9 @@ def main() -> None:
         text_model_name=text_model_name,
         audio_model_name=audio_model_name,
         embed_dim=model_cfg["projection"]["embed_dim"],
+        text_freeze_layers=model_cfg["text_encoder"].get("freeze_layers", 0),
+        audio_freeze_layers=model_cfg["audio_encoder"].get("freeze_layers", 0),
+        detach_encoders=model_cfg.get("detach_encoders", False),
     )
     load_checkpoint(args.checkpoint, model, strict=True)
 

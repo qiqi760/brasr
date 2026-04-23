@@ -11,7 +11,12 @@
 #       [--audio_root data/contrastive-learning/audio/] \
 #       [--resume outputs/glclap/checkpoint_epoch010.pt] \
 #       [--local_only] \
-#       [--nproc_per_node 4]
+#       [--nproc_per_node 4] \
+#       [--output_dir exp/my-custom-exp/]
+#
+# The output directory (--output_dir) controls where checkpoints and logs go.
+# If omitted, an auto-generated name is created under exp/ from the config:
+#   exp/YYYYMMDD-HHMMSS-dataset-audio_enc-text_enc-projDIM-bsB[-freezeN][-local][-detach]/
 #
 # Two training schemes are supported via the --local_only flag:
 #
@@ -75,6 +80,10 @@ while [[ $# -gt 0 ]]; do
             DEVICE="$2"
             shift 2
             ;;
+        --output_dir)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 --task <task_name> --dataset <dataset_name> [options]"
             echo ""
@@ -89,7 +98,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --resume PATH        Checkpoint to resume from"
             echo "  --local_only         Simplified local-only contrastive learning"
             echo "  --nproc_per_node N   Number of GPUs for DDP (default: 1)"
-  echo "  --device DEVICE      torch device (single-card only, default: cuda)"
+            echo "  --device DEVICE      torch device (single-card only, default: cuda)"
+            echo "  --output_dir DIR     Output directory for checkpoints/logs."
+            echo "                       If omitted, auto-generated under exp/"
             exit 0
             ;;
         *)
@@ -108,31 +119,12 @@ if [[ -z "${TASK}" || -z "${DATASET}" ]]; then
 fi
 
 # Build Python command
-CMD="python ${PROJECT_ROOT}/python_scripts/train.py"
-CMD="${CMD} --task ${TASK}"
-CMD="${CMD} --dataset ${DATASET}"
-CMD="${CMD} --model_config ${MODEL_CONFIG}"
-CMD="${CMD} --train_config ${TRAIN_CONFIG}"
-
-if [[ -n "${AUDIO_ROOT}" ]]; then
-    CMD="${CMD} --audio_root ${AUDIO_ROOT}"
-fi
-
-if [[ -n "${RESUME}" ]]; then
-    CMD="${CMD} --resume ${RESUME}"
-fi
-
-if [[ "${LOCAL_ONLY}" == true ]]; then
-    CMD="${CMD} --local_only"
-fi
-
 if [[ -n "${NPROC}" && "${NPROC}" -gt 1 ]]; then
     CMD="torchrun --nproc_per_node=${NPROC} ${PROJECT_ROOT}/python_scripts/train.py"
 else
     CMD="python ${PROJECT_ROOT}/python_scripts/train.py"
 fi
 
-# Re-build the rest of the command
 CMD="${CMD} --task ${TASK}"
 CMD="${CMD} --dataset ${DATASET}"
 CMD="${CMD} --model_config ${MODEL_CONFIG}"
@@ -154,12 +146,21 @@ if [[ -n "${DEVICE}" ]]; then
     CMD="${CMD} --device ${DEVICE}"
 fi
 
+if [[ -n "${OUTPUT_DIR}" ]]; then
+    CMD="${CMD} --output_dir ${OUTPUT_DIR}"
+fi
+
 echo "============================================================================"
 echo "  Task           : ${TASK}"
 echo "  Dataset        : ${DATASET}"
 echo "  Manifest       : data/${TASK}/${DATASET}.jsonl"
 if [[ -n "${NPROC}" ]]; then
     echo "  GPUs (DDP)     : ${NPROC}"
+fi
+if [[ -n "${OUTPUT_DIR}" ]]; then
+    echo "  Output dir     : ${OUTPUT_DIR}"
+else
+    echo "  Output dir     : auto-generated under exp/"
 fi
 echo "============================================================================"
 echo "Running: ${CMD}"

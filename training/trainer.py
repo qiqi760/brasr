@@ -224,6 +224,7 @@ class Trainer:
                     subtext_input_ids=batch["subtext_input_ids"],
                     subtext_attention_mask=batch["subtext_attention_mask"],
                     waveform=batch["waveforms"].squeeze(1),   # [B, T_samples]
+                    waveform_attention_mask=batch.get("waveform_attention_mask", None),
                     local_only=self.local_only,
                 )
                 # Standard mode:
@@ -298,6 +299,7 @@ class Trainer:
                     subtext_input_ids=batch["subtext_input_ids"],
                     subtext_attention_mask=batch["subtext_attention_mask"],
                     waveform=batch["waveforms"].squeeze(1),
+                    waveform_attention_mask=batch.get("waveform_attention_mask", None),
                     local_only=self.local_only,
                 )
                 loss_dict = glclap_loss(
