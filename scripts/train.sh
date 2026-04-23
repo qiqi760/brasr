@@ -12,6 +12,18 @@
 #       [--resume outputs/glclap/checkpoint_epoch010.pt] \
 #       [--local_only] \
 #       [--nproc_per_node 4]
+#
+# Two training schemes are supported via the --local_only flag:
+#
+#   1) Standard GLCLAP (default, local_only=false):
+#      Global + local contrastive learning.
+#      text_global [B,D]  <-> audio_global [B,D]   (Lg)
+#      text_local  [B,D]  <-> audio_local  [B,T',D] (Ll, max-pooling)
+#
+#   2) Simplified local-only (local_only=true):
+#      Close global branches; keep only subtext vs pooled audio.
+#      text_local  [B,D]  <-> audio_local  [B,D]   (standard InfoNCE)
+#
 # ============================================================================
 
 set -e
@@ -75,7 +87,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --train_config PATH  Training config YAML (default: configs/train_config.yaml)"
             echo "  --audio_root PATH    Audio root directory (default: data/\${task}/audio/)"
             echo "  --resume PATH        Checkpoint to resume from"
-            echo "  --local_only         Train LCLAP (local-only ablation)"
+            echo "  --local_only         Simplified local-only contrastive learning"
             echo "  --nproc_per_node N   Number of GPUs for DDP (default: 1)"
   echo "  --device DEVICE      torch device (single-card only, default: cuda)"
             exit 0

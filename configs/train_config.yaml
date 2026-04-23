@@ -43,7 +43,7 @@ scheduler:
   # total steps derived from epochs × steps_per_epoch
 
 training:
-  batch_size: 64            # paper: 64
+  batch_size: 16            # paper: 64
   num_epochs: 100           # paper: 100
   early_stopping_patience: 5
   grad_clip: 1.0

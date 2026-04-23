@@ -60,7 +60,9 @@ class Trainer:
         early_stopping_patience: Stop if val loss does not improve for N epochs.
         warmup_steps:      LR scheduler warm-up steps.
         scheduler_type:    LR schedule variant (see scheduler.py).
-        local_only:        If True, train with Ll only (LCLAP ablation).
+        local_only:        If True, use simplified local-only contrastive
+                           learning (subtext [B,D] vs pooled audio [B,D]).
+                           Global branches are closed in the forward pass.
         device:            Target device string (e.g. "cuda", "cpu").
     """
 
@@ -222,11 +224,16 @@ class Trainer:
                     subtext_input_ids=batch["subtext_input_ids"],
                     subtext_attention_mask=batch["subtext_attention_mask"],
                     waveform=batch["waveforms"].squeeze(1),   # [B, T_samples]
+                    local_only=self.local_only,
                 )
-                # output.text_global:  [B, D]
-                # output.text_local:   [B, D]
-                # output.audio_global: [B, D]
-                # output.audio_local:  [B, T', D]
+                # Standard mode:
+                #   output.text_global:  [B, D]
+                #   output.text_local:   [B, D]
+                #   output.audio_global: [B, D]
+                #   output.audio_local:  [B, T', D]
+                # Local-only mode:
+                #   output.text_local:   [B, D]
+                #   output.audio_local:  [B, D]
 
                 loss_dict = glclap_loss(
                     text_global=output.text_global,
@@ -245,17 +252,28 @@ class Trainer:
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
 
             self.scaler.step(self.optimizer)
-            self.scaler.update()
+            # PyTorch 2.0 AMP path may not increment optimizer._step_count,
+            # which causes LambdaLR to emit a harmless first-step warning.
+            # Manually ensure the counter is updated before scheduler.step().
+            if self.optimizer._step_count == 0:
+                self.optimizer._step_count = 1
             self.scheduler.step()
+            self.scaler.update()
 
             total_loss += loss.item()
 
             if step % 50 == 0 and self.is_main:
-                logger.info(
-                    f"  [E{epoch+1} S{step}] loss={loss.item():.4f} "
-                    f"Lg={loss_dict['loss_global'].item():.4f} "
-                    f"Ll={loss_dict['loss_local'].item():.4f}"
-                )
+                if self.local_only:
+                    logger.info(
+                        f"  [E{epoch+1} S{step}] loss={loss.item():.4f} "
+                        f"(local-only contrastive)"
+                    )
+                else:
+                    logger.info(
+                        f"  [E{epoch+1} S{step}] loss={loss.item():.4f} "
+                        f"Lg={loss_dict['loss_global'].item():.4f} "
+                        f"Ll={loss_dict['loss_local'].item():.4f}"
+                    )
 
         return total_loss / max(1, len(self.train_loader))
 
@@ -280,6 +298,7 @@ class Trainer:
                     subtext_input_ids=batch["subtext_input_ids"],
                     subtext_attention_mask=batch["subtext_attention_mask"],
                     waveform=batch["waveforms"].squeeze(1),
+                    local_only=self.local_only,
                 )
                 loss_dict = glclap_loss(
                     text_global=output.text_global,

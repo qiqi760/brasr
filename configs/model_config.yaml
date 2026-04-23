@@ -43,3 +43,9 @@ subtext:
   max_words: 5              # maximum words in a subtext span
   # TODO: paper does not specify exact sampling algorithm;
   #       current assumption: uniform random contiguous word span.
+
+# When encoders are fully frozen, detach their outputs to cut the computation
+# graph. This prevents PyTorch from storing encoder activations for backward,
+# saving ~60-75% GPU memory at the cost of never being able to fine-tune the
+# encoders in the same run.
+detach_encoders: true

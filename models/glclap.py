@@ -46,18 +46,23 @@ from .text_encoder import TextEncoder
 @dataclass
 class GLCLAPOutput:
     """
-    Container for all four embeddings produced by a forward pass.
+    Container for all embeddings produced by a forward pass.
 
-    Shapes:
+    Shapes (standard GLCLAP mode):
         text_global:   [B, embed_dim]     — Et  (projected)
         text_local:    [B, embed_dim]     — Et' (projected)
         audio_global:  [B, embed_dim]     — Ea  (projected, mean-pooled)
         audio_local:   [B, T', embed_dim] — Ea' (projected, frame-level)
+
+    Shapes (local_only=True  simplified mode):
+        text_local:    [B, embed_dim]     — pooled subtext embedding
+        audio_local:   [B, embed_dim]     — pooled audio embedding
+        text_global / audio_global:  None
     """
-    text_global:  torch.Tensor   # [B, D]
-    text_local:   torch.Tensor   # [B, D]
-    audio_global: torch.Tensor   # [B, D]
-    audio_local:  torch.Tensor   # [B, T', D]
+    text_global:  Optional[torch.Tensor] = None   # [B, D]
+    text_local:   Optional[torch.Tensor] = None   # [B, D]
+    audio_global: Optional[torch.Tensor] = None   # [B, D]
+    audio_local:  Optional[torch.Tensor] = None   # [B, D] or [B, T', D]
 
 
 class GLCLAP(nn.Module):
@@ -89,6 +94,7 @@ class GLCLAP(nn.Module):
         embed_dim: int = 512,
         text_freeze_layers: int = 0,
         audio_freeze_layers: int = 0,
+        detach_encoders: bool = False,
     ) -> None:
         super().__init__()
 
@@ -117,6 +123,7 @@ class GLCLAP(nn.Module):
         )
 
         self.embed_dim = embed_dim
+        self.detach_encoders = detach_encoders
 
     def encode_text(
         self,
@@ -133,8 +140,12 @@ class GLCLAP(nn.Module):
         Returns:
             [B, embed_dim]  — L2-normalised
         """
-        pooled = self.text_encoder(input_ids, attention_mask)  # [B, 768]
-        return self.text_proj(pooled)                          # [B, D]
+        if self.detach_encoders:
+            with torch.no_grad():
+                pooled = self.text_encoder(input_ids, attention_mask)  # [B, 768]
+        else:
+            pooled = self.text_encoder(input_ids, attention_mask)
+        return self.text_proj(pooled)                              # [B, D]
 
     def encode_audio(
         self,
@@ -155,7 +166,11 @@ class GLCLAP(nn.Module):
             When pool=True:  [B, embed_dim]
             When pool=False: ([B, T', embed_dim], [B, embed_dim])
         """
-        local_emb, global_emb = self.audio_encoder(waveform, attention_mask)
+        if self.detach_encoders:
+            with torch.no_grad():
+                local_emb, global_emb = self.audio_encoder(waveform, attention_mask)
+        else:
+            local_emb, global_emb = self.audio_encoder(waveform, attention_mask)
         # local_emb:  [B, T', hidden_size]
         # global_emb: [B, hidden_size]
 
@@ -174,6 +189,7 @@ class GLCLAP(nn.Module):
         subtext_attention_mask: torch.Tensor,
         waveform: torch.Tensor,
         waveform_attention_mask: Optional[torch.Tensor] = None,
+        local_only: bool = False,
     ) -> GLCLAPOutput:
         """
         Full GLCLAP forward pass.
@@ -185,20 +201,42 @@ class GLCLAP(nn.Module):
             subtext_attention_mask:   [B, N']
             waveform:                 [B, T_samples]
             waveform_attention_mask:  [B, T_samples]  (optional)
+            local_only:               If True, close global branches and return
+                                      only pooled subtext [B, D] and pooled
+                                      audio [B, D] for simplified contrastive
+                                      learning.
 
         Returns:
-            GLCLAPOutput:
-                .text_global:  [B, D]     — Et  projected
-                .text_local:   [B, D]     — Et' projected
-                .audio_global: [B, D]     — Ea  projected
-                .audio_local:  [B, T', D] — Ea' projected
+            GLCLAPOutput — see class docstring for per-mode field shapes.
         """
-        
-        # ── Text branches (shared encoder weights) ──
-        text_global  = self.encode_text(text_input_ids,    text_attention_mask)    # [B, D]
-        text_local   = self.encode_text(subtext_input_ids, subtext_attention_mask) # [B, D]
 
-        # ── Audio branch ──
+        if local_only:
+            # ── Local-only simplified mode ──
+            # Close global branches; keep only subtext (local) and pooled audio.
+            text_local = self.encode_text(
+                subtext_input_ids, subtext_attention_mask
+            )  # [B, D]
+
+            # Audio: encoder → local_emb [B, T', H] → pool over T' → [B, H] → proj → [B, D]
+            local_emb, _ = self.encode_audio(
+                waveform,
+                attention_mask=waveform_attention_mask,
+                pool=False,
+            )
+            pooled_emb = local_emb.mean(dim=1)               # [B, H]
+            audio_local = self.audio_proj(pooled_emb)        # [B, D]
+
+            return GLCLAPOutput(
+                text_local=text_local,    # [B, D]
+                audio_local=audio_local,  # [B, D]
+            )
+
+        # ── Standard GLCLAP mode ──
+        # Text branches (shared encoder weights)
+        text_global = self.encode_text(text_input_ids, text_attention_mask)        # [B, D]
+        text_local  = self.encode_text(subtext_input_ids, subtext_attention_mask)  # [B, D]
+
+        # Audio branch
         audio_local, audio_global = self.encode_audio(
             waveform,
             attention_mask=waveform_attention_mask,

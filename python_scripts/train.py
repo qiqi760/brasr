@@ -61,7 +61,9 @@ def parse_args() -> argparse.Namespace:
                    help="Root directory for audio files. Default: data/{task}/audio/")
     p.add_argument("--resume", default=None, help="Checkpoint path to resume from")
     p.add_argument("--local_only", action="store_true",
-                   help="Use only local (Ll) loss — trains LCLAP instead of GLCLAP")
+                   help="Simplified local-only contrastive learning: close "
+                        "global branches and train subtext [B,D] vs pooled "
+                        "audio [B,D] with standard InfoNCE")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--local_rank", type=int, default=-1,
                    help="Local rank for DistributedDataParallel (auto-set by torchrun)")
@@ -76,11 +78,20 @@ def main() -> None:
         train_cfg = yaml.safe_load(f)
 
     # ── Distributed setup ────────────────────────────────────────────────
-    distributed = args.local_rank != -1
+    # torchrun / launch.py set LOCAL_RANK via env var (PyTorch 2.x+).
+    # Fallback to the legacy --local_rank CLI arg for backward compat.
+    local_rank_env = os.environ.get("LOCAL_RANK", "")
+    if local_rank_env != "":
+        local_rank = int(local_rank_env)
+        distributed = True
+    else:
+        local_rank = args.local_rank
+        distributed = args.local_rank != -1
+
     if distributed:
         dist.init_process_group(backend="nccl")
-        torch.cuda.set_device(args.local_rank)
-        device = f"cuda:{args.local_rank}"
+        torch.cuda.set_device(local_rank)
+        device = f"cuda:{local_rank}"
         rank = dist.get_rank()
         world_size = dist.get_world_size()
     else:
@@ -111,7 +122,7 @@ def main() -> None:
         tokenizer=tokenizer,
         audio_root=audio_root,
         batch_size=train_cfg["training"]["batch_size"],
-        num_workers=0,
+        num_workers=4,
         sample_rate=train_cfg["audio"]["sample_rate"],
         max_duration_sec=train_cfg["audio"]["max_duration_sec"],
         min_words=model_cfg["subtext"]["min_words"],
@@ -131,11 +142,12 @@ def main() -> None:
         embed_dim=model_cfg["projection"]["embed_dim"],
         text_freeze_layers=model_cfg["text_encoder"]["freeze_layers"],
         audio_freeze_layers=model_cfg["audio_encoder"]["freeze_layers"],
+        detach_encoders=model_cfg.get("detach_encoders", False),
     )
     model = model.to(device)
 
     if distributed:
-        model = DDP(model, device_ids=[args.local_rank], output_device=args.local_rank,
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank,
                     find_unused_parameters=False)
 
     # ── Trainer ──────────────────────────────────────────────────────────

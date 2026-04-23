@@ -161,10 +161,10 @@ def local_contrastive_loss(
 
 
 def glclap_loss(
-    text_global: torch.Tensor,
-    text_local: torch.Tensor,
-    audio_global: torch.Tensor,
-    audio_local: torch.Tensor,
+    text_global: torch.Tensor | None,
+    text_local: torch.Tensor | None,
+    audio_global: torch.Tensor | None,
+    audio_local: torch.Tensor | None,
     temperature: float = 0.07,
     local_only: bool = False,
 ) -> dict[str, torch.Tensor]:
@@ -177,23 +177,34 @@ def glclap_loss(
         audio_global: [B, D]      — Ea  (global audio, L2-normalised)
         audio_local:  [B, T', D]  — Ea' (local audio, L2-normalised)
         temperature:  Scalar temperature.
-        local_only:   If True, compute only Ll (LCLAP ablation, not GLCLAP).
+        local_only:   If True, run simplified local-only contrastive learning:
+                      subtext [B, D] vs pooled audio [B, D] using standard
+                      InfoNCE (global_contrastive_loss). Global branches are
+                      closed and the four standard embeddings may be None.
 
     Returns:
         dict with keys:
-            "loss":         total loss scalar  (Lg + Ll, or just Ll)
+            "loss":         total loss scalar
             "loss_global":  Lg  (0.0 tensor if local_only)
-            "loss_local":   Ll
+            "loss_local":   Ll  (or the sole contrastive loss when local_only)
     """
-    Ll = local_contrastive_loss(text_local, audio_local, temperature)
-
     if local_only:
+        # New local_only behaviour:
+        # text_local  : [B, D]  (subtext embedding)
+        # audio_local : [B, D]  (pooled audio embedding)
+        assert text_local is not None and audio_local is not None
+        loss = global_contrastive_loss(text_local, audio_local, temperature)
         return {
-            "loss": Ll,
-            "loss_global": torch.tensor(0.0, device=Ll.device),
-            "loss_local": Ll,
+            "loss": loss,
+            "loss_global": torch.tensor(0.0, device=loss.device),
+            "loss_local": loss,
         }
 
+    # Standard GLCLAP mode
+    assert text_local is not None and audio_local is not None
+    Ll = local_contrastive_loss(text_local, audio_local, temperature)
+
+    assert text_global is not None and audio_global is not None
     Lg = global_contrastive_loss(text_global, audio_global, temperature)
     total = Lg + Ll
 
