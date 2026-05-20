@@ -1,0 +1,4 @@
+impersonations
+concatenation
+exclamations
+anomalies

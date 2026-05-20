@@ -1,0 +1,3 @@
+neighborliness
+thermometer
+precincts

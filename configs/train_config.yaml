@@ -43,9 +43,9 @@ scheduler:
   # total steps derived from epochs × steps_per_epoch
 
 training:
-  batch_size: 48            # paper: 64
+  batch_size: 16            # paper: 64
   num_epochs: 100           # paper: 100
-  early_stopping_patience: 5
+  early_stopping_patience: 20
   grad_clip: 1.0
   mixed_precision: true     # use torch.cuda.amp
   seed: 42

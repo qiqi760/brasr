@@ -11,6 +11,12 @@
 #       [--audio_root data/contrastive-learning/audio/] \
 #       [--resume outputs/glclap/checkpoint_epoch010.pt] \
 #       [--local_only] \
+#       [--flatten_subtexts] \
+#       [--bias_list data/contrastive-learning/bias-list.txt] \
+#       [--per_sample_bias_dir data/contrastive-learning/per_sample_bias_dev] \
+#       [--val_dataset libri-960-dev] \
+#       [--val_threshold 0.5] \
+#       [--val_top_k 10] \
 #       [--nproc_per_node 4] \
 #       [--output_dir exp/my-custom-exp/]
 #
@@ -76,6 +82,10 @@ while [[ $# -gt 0 ]]; do
             NPROC="$2"
             shift 2
             ;;
+        --master_port)
+            MASTER_PORT="$2"
+            shift 2
+            ;;
         --device)
             DEVICE="$2"
             shift 2
@@ -84,6 +94,34 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_DIR="$2"
             shift 2
             ;;
+        # ── 修改处：新增 flatten_subtexts 开关 ──────────────────────
+        --flatten_subtexts)
+            FLATTEN_SUBTEXTS=true
+            shift
+            ;;
+        # ──────────────────────────────────────────────────────────
+        # ── 修改处：新增每轮 val 评估参数 ──────────────────────────
+        --val_dataset)
+            VAL_DATASET="$2"
+            shift 2
+            ;;
+        --bias_list)
+            BIAS_LIST="$2"
+            shift 2
+            ;;
+        --per_sample_bias_dir)
+            PER_SAMPLE_BIAS_DIR="$2"
+            shift 2
+            ;;
+        --val_threshold)
+            VAL_THRESHOLD="$2"
+            shift 2
+            ;;
+        --val_top_k)
+            VAL_TOP_K="$2"
+            shift 2
+            ;;
+        # ──────────────────────────────────────────────────────────
         -h|--help)
             echo "Usage: $0 --task <task_name> --dataset <dataset_name> [options]"
             echo ""
@@ -97,7 +135,14 @@ while [[ $# -gt 0 ]]; do
             echo "  --audio_root PATH    Audio root directory (default: data/\${task}/audio/)"
             echo "  --resume PATH        Checkpoint to resume from"
             echo "  --local_only         Simplified local-only contrastive learning"
-            echo "  --nproc_per_node N   Number of GPUs for DDP (default: 1)"
+            echo "  --flatten_subtexts   Flatten subtexts to simulate larger batch"
+            echo "  --bias_list PATH     Global bias list for per-epoch evaluation"
+            echo "  --per_sample_bias_dir DIR  Per-sample bias dir for per-epoch eval"
+            echo "  --val_dataset NAME   Validation dataset name (default: {dataset}-dev)"
+            echo "  --val_threshold F    Eval similarity threshold (default: 0.5)"
+            echo "  --val_top_k N        Eval top-k (default: 10)"
+            echo "  --nproc_per_node N   Number of GPUs for DDP (default: 1)
+  --master_port PORT   DDP master port (default: 29500)"
             echo "  --device DEVICE      torch device (single-card only, default: cuda)"
             echo "  --output_dir DIR     Output directory for checkpoints/logs."
             echo "                       If omitted, auto-generated under exp/"
@@ -120,7 +165,11 @@ fi
 
 # Build Python command
 if [[ -n "${NPROC}" && "${NPROC}" -gt 1 ]]; then
-    CMD="torchrun --nproc_per_node=${NPROC} ${PROJECT_ROOT}/python_scripts/train.py"
+    CMD="torchrun --nproc_per_node=${NPROC}"
+    if [[ -n "${MASTER_PORT}" ]]; then
+        CMD="${CMD} --master_port=${MASTER_PORT}"
+    fi
+    CMD="${CMD} ${PROJECT_ROOT}/python_scripts/train.py"
 else
     CMD="python ${PROJECT_ROOT}/python_scripts/train.py"
 fi
@@ -141,6 +190,30 @@ fi
 if [[ "${LOCAL_ONLY}" == true ]]; then
     CMD="${CMD} --local_only"
 fi
+
+# ── 修改处：新增 flatten_subtexts ──────────────────────────────────
+if [[ "${FLATTEN_SUBTEXTS}" == true ]]; then
+    CMD="${CMD} --flatten_subtexts"
+fi
+# ──────────────────────────────────────────────────────────────────
+
+# ── 修改处：新增 val 评估参数 ──────────────────────────────────────
+if [[ -n "${VAL_DATASET}" ]]; then
+    CMD="${CMD} --val_dataset ${VAL_DATASET}"
+fi
+if [[ -n "${BIAS_LIST}" ]]; then
+    CMD="${CMD} --bias_list ${BIAS_LIST}"
+fi
+if [[ -n "${PER_SAMPLE_BIAS_DIR}" ]]; then
+    CMD="${CMD} --per_sample_bias_dir ${PER_SAMPLE_BIAS_DIR}"
+fi
+if [[ -n "${VAL_THRESHOLD}" ]]; then
+    CMD="${CMD} --val_threshold ${VAL_THRESHOLD}"
+fi
+if [[ -n "${VAL_TOP_K}" ]]; then
+    CMD="${CMD} --val_top_k ${VAL_TOP_K}"
+fi
+# ──────────────────────────────────────────────────────────────────
 
 if [[ -n "${DEVICE}" ]]; then
     CMD="${CMD} --device ${DEVICE}"

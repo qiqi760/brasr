@@ -19,6 +19,7 @@ text_encoder:
   # Output hidden size from BERT: 768
   # After average pooling over token dim → [B, 768]
   freeze_layers: 999        # 999 = freeze ALL layers (only projection heads trained)
+  use_attention_pooling: true   # true → Attention Pooling (arXiv:2505.19179)
 
 audio_encoder:
   # ---------------------------------------------------------------------------
@@ -26,10 +27,11 @@ audio_encoder:
   # Default: "facebook/data2vec-audio-large-960h"
   # ModelScope mirror also works:  modelscope download --model facebook/data2vec-audio-large-960h
   # ---------------------------------------------------------------------------
-  model_name: "facebook/data2vec-audio-large-960h"
+  model_name: "facebook/data2vec-audio-large-960h"  #在libri上微调得的除掉linear层
   # The audio encoder outputs [B, T//4, hidden_size].
   # hidden_size for data2vec-audio-large = 1024.
   freeze_layers: 999        # 999 = freeze ALL layers (only projection heads trained)
+  use_attention_pooling: true   # true → Attention Pooling (arXiv:2505.19179)
 
 projection:
   # Project both text (768) and audio (1024) to a shared embedding space.

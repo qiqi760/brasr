@@ -77,6 +77,7 @@ def global_contrastive_loss(
     text_global: torch.Tensor,
     audio_global: torch.Tensor,
     temperature: float = 0.07,
+    sample_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Global contrastive loss Lg (Eq. 3).
@@ -84,24 +85,68 @@ def global_contrastive_loss(
     Both directions are computed and averaged:
         l(Et · Ea^T) + l(Ea · Et^T)
 
+    When ``sample_ids`` is provided (flatten_subtexts mode), the audio side
+    is deduplicated on the key axis: each original sample contributes only
+    one unique audio embedding to the similarity matrix, eliminating the
+    K_j-times repeated negative penalty caused by duplicated audio copies.
+
     Args:
         text_global:  [B, D]  — L2-normalised global text embeddings (Et)
         audio_global: [B, D]  — L2-normalised global audio embeddings (Ea)
         temperature:  Scalar temperature.
+        sample_ids:   [B]     — optional grouping ids (flatten mode).
 
     Returns:
         Scalar loss Lg.
-
-    Intermediate shapes:
-        sim_t2a: [B, B]  — text→audio similarity
-        sim_a2t: [B, B]  — audio→text similarity (== sim_t2a.T)
     """
-    # Assumes embeddings are already L2-normalised (done in ProjectionHead).
-    sim_t2a = text_global @ audio_global.T    # [B, B]
-    sim_a2t = sim_t2a.T                       # [B, B]
+    if sample_ids is None:
+        # Standard mode: B×B symmetric InfoNCE
+        sim_t2a = text_global @ audio_global.T    # [B, B]
+        sim_a2t = sim_t2a.T                       # [B, B]
+        loss_t2a = _info_nce(sim_t2a, temperature)
+        loss_a2t = _info_nce(sim_a2t, temperature)
+        return (loss_t2a + loss_a2t) / 2.0  # scalar
 
-    loss_t2a = _info_nce(sim_t2a, temperature)
-    loss_a2t = _info_nce(sim_a2t, temperature)
+    # ── Flatten mode: key-side deduplication ──
+    # text_global : [B*K, D]  (K subtexts per sample, all different)
+    # audio_global: [B*K, D]  (K_j copies of the same audio per sample)
+    # sample_ids  : [B*K]     (grouping ids, e.g. [0,0,0, 1,1,1, 2,2,...])
+
+    # Step 1: extract unique audio embeddings (first occurrence per sample)
+    first_mask = torch.cat([
+        sample_ids.new_tensor([True]),
+        sample_ids[1:] != sample_ids[:-1]
+    ])  # [B*K]
+    unique_idx = torch.where(first_mask)[0]  # [num_samples]
+    audio_unique = audio_global[unique_idx]   # [num_samples, D]
+
+    # Build mapping: each flattened position → its sample's index in unique
+    _, inverse = torch.unique(sample_ids, return_inverse=True)  # [B*K], 将每个文本的 sample_id 转换为在 unique_idx 中的索引（即 0,1,...,B-1）
+
+    # ── text → audio direction ── 负样本集是所有j≠ s的音频(每个音频只出现一次)，而j=s的音频是唯一正样本。
+    # Query: B*K texts;  Key: num_samples unique audios
+    sim_t2a = text_global @ audio_unique.T   # [B*K, num_samples]
+    # Positive label for text i is the unique index of its sample
+    labels_t2a = inverse                     # [B*K]
+    loss_t2a = F.cross_entropy(sim_t2a / temperature, labels_t2a)
+
+    # ── audio → text direction ── 将同一样本内的所有子文本标记为正，从而避免它们被计入分母的负项
+    # Query: num_samples unique audios;  Key: B*K texts
+    sim_a2t = audio_unique @ text_global.T   # [num_samples, B*K]
+    logits = sim_a2t / temperature           # [num_samples, B*K]
+
+    # Multi-positive: each audio matches ALL texts belonging to the same sample
+    unique_sample_ids = sample_ids[unique_idx]  # [num_samples]
+    pos_mask = (unique_sample_ids.unsqueeze(1) == sample_ids.unsqueeze(0)).float()  # [num_samples, B*K]
+
+    # Numerical stability
+    logits_max, _ = logits.max(dim=1, keepdim=True)
+    logits_stable = logits - logits_max
+    exp_logits = torch.exp(logits_stable)
+    exp_pos = exp_logits * pos_mask  
+    log_pos_sum = torch.log(exp_pos.sum(dim=1) + 1e-8)
+    log_sum_exp = torch.log(exp_logits.sum(dim=1) + 1e-8)
+    loss_a2t = -(log_pos_sum - log_sum_exp).mean()
 
     return (loss_t2a + loss_a2t) / 2.0  # scalar
 
@@ -167,6 +212,7 @@ def glclap_loss(
     audio_local: torch.Tensor | None,
     temperature: float = 0.07,
     local_only: bool = False,
+    sample_ids: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     """
     Combined GLCLAP loss: L = Lg + Ll  (Eq. 5).
@@ -181,6 +227,11 @@ def glclap_loss(
                       subtext [B, D] vs pooled audio [B, D] using standard
                       InfoNCE (global_contrastive_loss). Global branches are
                       closed and the four standard embeddings may be None.
+        sample_ids:   [B]         — Optional grouping ids from collate_fn.
+                      When provided, global_contrastive_loss deduplicates the
+                      audio side on the key axis so each sample contributes
+                      exactly one unique audio embedding, preventing the K_j
+                      repeated-negative penalty.
 
     Returns:
         dict with keys:
@@ -193,7 +244,7 @@ def glclap_loss(
         # text_local  : [B, D]  (subtext embedding)
         # audio_local : [B, D]  (pooled audio embedding)
         assert text_local is not None and audio_local is not None
-        loss = global_contrastive_loss(text_local, audio_local, temperature)
+        loss = global_contrastive_loss(text_local, audio_local, temperature, sample_ids)
         return {
             "loss": loss,
             "loss_global": torch.tensor(0.0, device=loss.device),
@@ -205,7 +256,7 @@ def glclap_loss(
     Ll = local_contrastive_loss(text_local, audio_local, temperature)
 
     assert text_global is not None and audio_global is not None
-    Lg = global_contrastive_loss(text_global, audio_global, temperature)
+    Lg = global_contrastive_loss(text_global, audio_global, temperature, sample_ids)
     total = Lg + Ll
 
     return {

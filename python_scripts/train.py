@@ -21,6 +21,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import argparse
 import datetime
+from datetime import timedelta
 import re
 import sys
 from pathlib import Path
@@ -129,6 +130,27 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output_dir", default=None,
                    help="Output directory for checkpoints and logs. "
                         "If not set, an auto-generated name under exp/ is used.")
+
+    # ── 修改处：新增 flatten_subtexts 开关 ────────────────────────────
+    p.add_argument("--flatten_subtexts", action="store_true",
+                   help="Flatten subtexts in collate_fn to simulate larger "
+                        "effective batch size (batch_size * num_subtexts).")
+    # ──────────────────────────────────────────────────────────────────
+
+    # ── 修改处：新增每轮 val 评估参数 ─────────────────────────────────
+    p.add_argument("--val_dataset", default=None,
+                   help="Validation dataset name (e.g. libri-960-dev). "
+                        "If omitted, defaults to {dataset}-dev.")
+    p.add_argument("--bias_list", default=None,
+                   help="Global bias list file for per-epoch evaluation.")
+    p.add_argument("--per_sample_bias_dir", default=None,
+                   help="Per-sample bias list directory for per-epoch evaluation.")
+    p.add_argument("--val_threshold", type=float, default=0.5,
+                   help="Similarity threshold for per-epoch evaluation (default: 0.5).")
+    p.add_argument("--val_top_k", type=int, default=10,
+                   help="Top-k for per-epoch evaluation (default: 10).")
+    # ──────────────────────────────────────────────────────────────────
+
     return p.parse_args()
 
 
@@ -191,12 +213,13 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(text_model_name)
 
     # ── Dataloaders ──────────────────────────────────────────────────────
+    # ── 修改处：build_dataloader 传入 flatten_subtexts ───────────────
     train_loader = build_dataloader(
         manifest_path=manifest_path,
         tokenizer=tokenizer,
         audio_root=audio_root,
         batch_size=train_cfg["training"]["batch_size"],
-        num_workers=4,
+        num_workers=0,
         sample_rate=train_cfg["audio"]["sample_rate"],
         max_duration_sec=train_cfg["audio"]["max_duration_sec"],
         min_words=model_cfg["subtext"]["min_words"],
@@ -204,10 +227,14 @@ def main() -> None:
         shuffle=True,
         seed=train_cfg["training"]["seed"],
         distributed=distributed,
+        flatten_subtexts=args.flatten_subtexts,
     )
+    # ──────────────────────────────────────────────────────────────────
 
     # Validation loader (optional)
-    val_manifest_path = f"data/{args.task}/{args.dataset}-dev.jsonl"
+    # ── 修改处：支持自定义 val_dataset，传入 flatten_subtexts ─────────
+    val_dataset_name = args.val_dataset or f"{args.dataset}-dev"
+    val_manifest_path = f"data/{args.task}/{val_dataset_name}.jsonl"
     val_loader = None
     if os.path.exists(val_manifest_path):
         val_loader = build_dataloader(
@@ -215,7 +242,7 @@ def main() -> None:
             tokenizer=tokenizer,
             audio_root=audio_root,
             batch_size=train_cfg["training"]["batch_size"],
-            num_workers=4,
+            num_workers=0,
             sample_rate=train_cfg["audio"]["sample_rate"],
             max_duration_sec=train_cfg["audio"]["max_duration_sec"],
             min_words=model_cfg["subtext"]["min_words"],
@@ -223,7 +250,9 @@ def main() -> None:
             shuffle=False,
             seed=train_cfg["training"]["seed"],
             distributed=distributed,
+            flatten_subtexts=args.flatten_subtexts,
         )
+    # ──────────────────────────────────────────────────────────────────
 
     # ── Model ────────────────────────────────────────────────────────────
     model = GLCLAP(
@@ -233,18 +262,36 @@ def main() -> None:
         text_freeze_layers=model_cfg["text_encoder"]["freeze_layers"],
         audio_freeze_layers=model_cfg["audio_encoder"]["freeze_layers"],
         detach_encoders=model_cfg.get("detach_encoders", False),
+        text_use_attention_pooling=model_cfg["text_encoder"].get("use_attention_pooling", False),
+        audio_use_attention_pooling=model_cfg["audio_encoder"].get("use_attention_pooling", False),
     )
     model = model.to(device)
 
     if distributed:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank,
-                    find_unused_parameters=False)
+                    find_unused_parameters=True)
+
+    # ── 修改处：构建 val_eval_config 传给 Trainer ────────────────────
+    val_eval_config = None
+    if args.bias_list or args.per_sample_bias_dir:
+        val_eval_config = {
+            "task": args.task,
+            "dataset": val_dataset_name,
+            "model_config": args.model_config,
+            "bias_list": args.bias_list,
+            "per_sample_bias_dir": args.per_sample_bias_dir,
+            "threshold": args.val_threshold,
+            "top_k": args.val_top_k,
+            "eval_batch_size": 8,
+        }
+    # ──────────────────────────────────────────────────────────────────
 
     # ── Trainer ──────────────────────────────────────────────────────────
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
+        val_eval_config=val_eval_config,
         output_dir=output_dir,
         lr=train_cfg["optimizer"]["lr"],
         weight_decay=train_cfg["optimizer"]["weight_decay"],
@@ -259,13 +306,15 @@ def main() -> None:
         device=device,
         rank=rank,
         world_size=world_size,
+        seed=train_cfg["training"]["seed"],
+        tokenizer=tokenizer,
     )
 
     trainer.train(resume_from=args.resume)
 
     if distributed:
         dist.destroy_process_group()
-
+        dist.init_process_group(backend="nccl", timeout=timedelta(hours=2))
 
 if __name__ == "__main__":
     main()

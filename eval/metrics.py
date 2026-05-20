@@ -159,3 +159,107 @@ def compute_wer(hypotheses: list[str], references: list[str]) -> float:
         raise ImportError("Install jiwer: pip install jiwer") from e
 
     return jiwer.wer(references, hypotheses)
+
+
+def compute_bwer(
+    hypotheses: list[str],
+    references: list[str],
+    bias_lists: list[list[str]],
+) -> float:
+    """
+    Compute Biased Word Error Rate (B-WER).
+
+    B-WER measures the word error rate restricted to words that appear
+    in the bias list. It is a standard metric for contextual biasing ASR
+    evaluation (e.g. Interspeech 2025 papers).
+
+    For each utterance, we align reference and hypothesis at word level
+    via ``jiwer``, then count substitution / deletion / insertion errors
+    that involve words present in the bias list.
+
+    Args:
+        hypotheses:   ASR hypothesis strings (one per utterance).
+        references:   Reference transcription strings (one per utterance).
+        bias_lists:   List of bias word/phrase lists (one per utterance).
+                      Each phrase is split into individual words for matching.
+
+    Returns:
+        B-WER as a float in [0, ∞).  Returns 0.0 when no bias words
+        occur in any reference.
+
+    Raises:
+        ImportError: if ``jiwer`` is not installed.
+        ValueError:  if input lists have mismatched lengths.
+
+    Example:
+        >>> compute_bwer(
+        ...     ["taylor swifty is singing"],
+        ...     ["taylor swift is singing"],
+        ...     [["taylor swift"]],
+        ... )
+        0.5   # "swift" substituted → 1 error / 2 bias words
+    """
+    try:
+        import jiwer
+    except ImportError as e:
+        raise ImportError("Install jiwer: pip install jiwer") from e
+
+    if not (len(hypotheses) == len(references) == len(bias_lists)):
+        raise ValueError(
+            "hypotheses, references, and bias_lists must have equal length"
+        )
+
+    # Build per-utterance bias-word sets (split phrases into individual words)
+    utterance_bias_sets: list[set[str]] = []
+    for bias_list in bias_lists:
+        words: set[str] = set()
+        for phrase in bias_list:
+            for w in str(phrase).split():
+                words.add(w.lower())
+        utterance_bias_sets.append(words)
+
+    # Batch word-level alignment with standard ASR preprocessing
+    output = jiwer.process_words(
+        references,
+        hypotheses,
+        reference_transform=jiwer.wer_standardize,
+        hypothesis_transform=jiwer.wer_standardize,
+    )
+
+    total_bias_words = 0
+    total_sub = 0
+    total_del = 0
+    total_ins = 0
+
+    for align, ref_words, hyp_words, bias_set in zip(
+        output.alignments,
+        output.references,
+        output.hypotheses,
+        utterance_bias_sets,
+    ):
+        # Count how many reference words belong to the bias list
+        for w in ref_words:
+            if w.lower() in bias_set:
+                total_bias_words += 1
+
+        # Traverse alignment chunks and tally errors involving bias words
+        for chunk in align:
+            if chunk.type == "substitute":
+                for i in range(chunk.ref_start_idx, chunk.ref_end_idx):
+                    if ref_words[i].lower() in bias_set:
+                        total_sub += 1
+            elif chunk.type == "delete":
+                for i in range(chunk.ref_start_idx, chunk.ref_end_idx):
+                    if ref_words[i].lower() in bias_set:
+                        total_del += 1
+            elif chunk.type == "insert":
+                for i in range(chunk.hyp_start_idx, chunk.hyp_end_idx):
+                    if hyp_words[i].lower() in bias_set:
+                        total_ins += 1
+
+    if total_bias_words == 0:
+        return 0.0
+
+    return (total_sub + total_del + total_ins) / total_bias_words
+
+#训练加acc（val-》测试）

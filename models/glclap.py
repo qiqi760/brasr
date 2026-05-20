@@ -33,7 +33,7 @@ Loss computation is delegated to losses/contrastive.py.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
@@ -75,6 +75,10 @@ class GLCLAP(nn.Module):
         embed_dim:         Shared projection dimension D (default 512).
         text_freeze_layers:  Number of bottom BERT layers to freeze.
         audio_freeze_layers: Number of bottom D2V layers to freeze.
+        text_use_attention_pooling: If True, replace mean pooling with
+                                    AttentionPooling in text encoder.
+        audio_use_attention_pooling: If True, replace mean pooling with
+                                     AttentionPooling in audio encoder.
 
     Forward inputs:
         text_input_ids:           [B, N]           — global text tokens
@@ -95,16 +99,20 @@ class GLCLAP(nn.Module):
         text_freeze_layers: int = 0,
         audio_freeze_layers: int = 0,
         detach_encoders: bool = False,
+        text_use_attention_pooling: bool = False,
+        audio_use_attention_pooling: bool = False,
     ) -> None:
         super().__init__()
 
         self.text_encoder = TextEncoder(
             model_name=text_model_name,
             freeze_layers=text_freeze_layers,
+            use_attention_pooling=text_use_attention_pooling,
         )
         self.audio_encoder = AudioEncoder(
             model_name=audio_model_name,
             freeze_layers=audio_freeze_layers,
+            use_attention_pooling=audio_use_attention_pooling,
         )
 
         # Projection heads
@@ -146,6 +154,55 @@ class GLCLAP(nn.Module):
         else:
             pooled = self.text_encoder(input_ids, attention_mask)
         return self.text_proj(pooled)                              # [B, D]
+
+    def _encode_with_dedup(
+        self,
+        sample_ids: Optional[torch.Tensor],
+        encode_fn: Callable,
+        *tensor_args: torch.Tensor,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        对展平输入按 sample_ids 去重后编码，再将 embedding 复制回 B*K。
+
+        当 flatten_subtexts=True 时，同一音频/全局文本会被复制 K 次。
+        为避免重复 forward 浪费计算与显存，本方法先提取每个原始样本的
+        唯一输入，编码一次后再按 sample_ids 映射回展平维度。
+
+        MODIFIED (2026-05-14): 新增。
+
+        Args:
+            sample_ids:  [B*K] 分组标识；None 时退化为逐条编码（兼容旧逻辑）。
+            encode_fn:   self.encode_text 或 self.encode_audio 等编码方法。
+            *tensor_args: 传给 encode_fn 的张量参数，每个都是 [B*K, ...]。
+            **kwargs:    传给 encode_fn 的额外关键字参数。
+
+        Returns:
+            与 encode_fn 返回值同结构，但 batch 维度已恢复为 B*K。
+        """
+        if sample_ids is None:
+            return encode_fn(*tensor_args, **kwargs)
+
+        # 计算每个原始样本第一次出现的位置（sample_ids 在 collate_fn 中已排序）
+        first_mask = torch.cat([
+            sample_ids.new_tensor([True]),
+            sample_ids[1:] != sample_ids[:-1]
+        ])
+        unique_idx = torch.where(first_mask)[0]
+
+        # 取唯一输入，编码一次
+        unique_tensors = [t[unique_idx] for t in tensor_args]
+        unique_out = encode_fn(*unique_tensors, **kwargs)
+
+        # 构建逆映射：每个展平位置对应 unique 中的哪个索引
+        _, inverse = torch.unique(sample_ids, return_inverse=True)
+
+        # 将输出复制回 B*K
+        if isinstance(unique_out, tuple):
+            return tuple(u[inverse] for u in unique_out)
+        return unique_out[inverse]
+
+    # ──────────────────────────────────────────────────────────────────
 
     def encode_audio(
         self,
@@ -190,6 +247,7 @@ class GLCLAP(nn.Module):
         waveform: torch.Tensor,
         waveform_attention_mask: Optional[torch.Tensor] = None,
         local_only: bool = False,
+        sample_ids: Optional[torch.Tensor] = None,
     ) -> GLCLAPOutput:
         """
         Full GLCLAP forward pass.
@@ -205,6 +263,9 @@ class GLCLAP(nn.Module):
                                       only pooled subtext [B, D] and pooled
                                       audio [B, D] for simplified contrastive
                                       learning.
+            sample_ids:               [B*K] 分组标识（展平模式时提供）。
+                                      用于对同一音频/全局文本去重编码，
+                                      避免重复 forward。None 时逐条编码。
 
         Returns:
             GLCLAPOutput — see class docstring for per-mode field shapes.
@@ -218,11 +279,23 @@ class GLCLAP(nn.Module):
             )  # [B, D]
 
             # Audio: pooled global audio embedding [B, D]
-            audio_local = self.encode_audio(
-                waveform,
-                attention_mask=waveform_attention_mask,
-                pool=True,
-            )  # [B, D]
+            # MODIFIED (2026-05-14): 使用 _encode_with_dedup 避免同一音频重复编码
+            if waveform_attention_mask is not None:
+                audio_local = self._encode_with_dedup(
+                    sample_ids,
+                    self.encode_audio,
+                    waveform,
+                    waveform_attention_mask,
+                    pool=True,
+                )
+            else:
+                audio_local = self._encode_with_dedup(
+                    sample_ids,
+                    self.encode_audio,
+                    waveform,
+                    pool=True,
+                )
+            # ──────────────────────────────────────────────────────────
 
             return GLCLAPOutput(
                 text_local=text_local,    # [B, D]
@@ -231,15 +304,36 @@ class GLCLAP(nn.Module):
 
         # ── Standard GLCLAP mode ──
         # Text branches (shared encoder weights)
-        text_global = self.encode_text(text_input_ids, text_attention_mask)        # [B, D]
-        text_local  = self.encode_text(subtext_input_ids, subtext_attention_mask)  # [B, D]
+        # MODIFIED (2026-05-14): 全局文本去重编码，subtext 保持逐条
+        text_global = self._encode_with_dedup(
+            sample_ids,
+            self.encode_text,
+            text_input_ids,
+            text_attention_mask,
+        )  # [B, D]
+        text_local = self.encode_text(
+            subtext_input_ids, subtext_attention_mask
+        )  # [B, D]
+        # ──────────────────────────────────────────────────────────────
 
         # Audio branch
-        audio_local, audio_global = self.encode_audio(
-            waveform,
-            attention_mask=waveform_attention_mask,
-            pool=False,
-        )  # ([B, T', D], [B, D])
+        # MODIFIED (2026-05-14): 使用 _encode_with_dedup 避免同一音频重复编码
+        if waveform_attention_mask is not None:
+            audio_local, audio_global = self._encode_with_dedup(
+                sample_ids,
+                self.encode_audio,
+                waveform,
+                waveform_attention_mask,
+                pool=False,
+            )
+        else:
+            audio_local, audio_global = self._encode_with_dedup(
+                sample_ids,
+                self.encode_audio,
+                waveform,
+                pool=False,
+            )
+        # ──────────────────────────────────────────────────────────────
 
         return GLCLAPOutput(
             text_global=text_global,    # [B, D]

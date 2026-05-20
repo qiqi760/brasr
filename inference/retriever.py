@@ -73,7 +73,7 @@ class BiasWordRetriever:
     # ──────────────────────────────────────────────────────────────────────
 
     @torch.no_grad()
-    def set_bias_list(self, words: list[str]) -> None:
+    def set_bias_list(self, words: list[str], batch_size: int = 256) -> None:
         """
         Encode the user-defined bias word list and cache the embeddings.
 
@@ -82,6 +82,7 @@ class BiasWordRetriever:
 
         Args:
             words: List of K bias phrases/words, e.g. ["Taylor Swift", "FIFA"].
+            batch_size: Number of words to encode at once to limit GPU memory.
 
         Side effects:
             Sets self._bias_words and self._bias_embeddings [K, D].
@@ -91,18 +92,23 @@ class BiasWordRetriever:
             self._bias_embeddings = None
             return
 
-        enc = self.tokenizer(
-            words,
-            padding="max_length",
-            truncation=True,
-            max_length=self.max_text_len,
-            return_tensors="pt",
-        )
-        input_ids      = enc["input_ids"].to(self.device)       # [K, N]
-        attention_mask = enc["attention_mask"].to(self.device)  # [K, N]
+        # Encode in chunks to avoid OOM with large bias lists
+        embeddings = []
+        for i in range(0, len(words), batch_size):
+            chunk = words[i : i + batch_size]
+            enc = self.tokenizer(
+                chunk,
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_text_len,
+                return_tensors="pt",
+            )
+            input_ids      = enc["input_ids"].to(self.device)       # [B, N]
+            attention_mask = enc["attention_mask"].to(self.device)  # [B, N]
+            chunk_emb = self.model.encode_text(input_ids, attention_mask)
+            embeddings.append(chunk_emb.cpu())
 
-        # Encode: [K, N] → [K, D]  (projected, L2-normalised)
-        self._bias_embeddings = self.model.encode_text(input_ids, attention_mask)
+        self._bias_embeddings = torch.cat(embeddings, dim=0).to(self.device)
         # self._bias_embeddings: [K, D]
 
         logger.info(f"Encoded {len(words)} bias words → embeddings [{len(words)}, {self._bias_embeddings.shape[-1]}]")

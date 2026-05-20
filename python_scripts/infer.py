@@ -82,8 +82,10 @@ def main() -> None:
         text_freeze_layers=model_cfg["text_encoder"].get("freeze_layers", 0),
         audio_freeze_layers=model_cfg["audio_encoder"].get("freeze_layers", 0),
         detach_encoders=model_cfg.get("detach_encoders", False),
+        text_use_attention_pooling=model_cfg["text_encoder"].get("use_attention_pooling", False),
+        audio_use_attention_pooling=model_cfg["audio_encoder"].get("use_attention_pooling", False),
     )
-    load_checkpoint(args.checkpoint, model, strict=True)
+    load_checkpoint(args.checkpoint, model, strict=False)
 
     retriever = BiasWordRetriever(
         model=model,

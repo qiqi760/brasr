@@ -1,0 +1,4 @@
+inertia
+duplicity
+concatenation
+weaving

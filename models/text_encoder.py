@@ -31,17 +31,22 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel
 
+from .projections import AttentionPooling
+
 
 class TextEncoder(nn.Module):
     """
-    Wraps a HuggingFace BERT model and applies masked mean pooling.
+    Wraps a HuggingFace BERT model and applies pooling over token embeddings.
+
+    Supports both masked mean pooling (default) and Attention Pooling
+    (arXiv:2505.19179) via the ``use_attention_pooling`` flag.
 
     Input tensors come from the BERT tokeniser:
         input_ids:      [B, N]  — token indices (0-padded)
         attention_mask: [B, N]  — 1 for real tokens, 0 for padding
 
     Output:
-        pooled: [B, hidden_size]  — mean of real token embeddings
+        pooled: [B, hidden_size]  — pooled token embeddings
 
     hidden_size = 768 for bert-base-multilingual-uncased.
     """
@@ -50,13 +55,25 @@ class TextEncoder(nn.Module):
         self,
         model_name: str = "bert-base-multilingual-uncased",
         freeze_layers: int = 0,
+        use_attention_pooling: bool = False,
     ) -> None:
         super().__init__()
         self.bert = AutoModel.from_pretrained(model_name)
         self.hidden_size: int = self.bert.config.hidden_size  # 768
+        self.use_attention_pooling = use_attention_pooling
 
         if freeze_layers > 0:
             self._freeze_bottom_layers(freeze_layers)
+
+        # Attention Pooling (arXiv:2505.19179) to replace mean pooling
+        if use_attention_pooling:
+            self.attn_pool = AttentionPooling(
+                hidden_size=self.hidden_size,
+                num_heads=1,
+                attn_dim=self.hidden_size,
+            )
+        else:
+            self.attn_pool = None
 
     def _freeze_bottom_layers(self, n: int) -> None:
         """Freeze the embedding layer and bottom-n transformer blocks."""
@@ -99,10 +116,14 @@ class TextEncoder(nn.Module):
         )
         last_hidden = outputs.last_hidden_state  # [B, N, hidden_size]
 
-        # Masked mean pooling: average only over real (non-pad) tokens
-        mask_expanded = attention_mask.unsqueeze(-1).float()  # [B, N, 1]
-        sum_embeddings = (last_hidden * mask_expanded).sum(dim=1)  # [B, hidden_size]
-        token_counts   = mask_expanded.sum(dim=1).clamp(min=1e-9)  # [B, 1]
-        pooled = sum_embeddings / token_counts                      # [B, hidden_size]
+        if self.attn_pool is not None:
+            # Attention Pooling (arXiv:2505.19179)
+            pooled = self.attn_pool(last_hidden, attention_mask=attention_mask)
+        else:
+            # Masked mean pooling: average only over real (non-pad) tokens
+            mask_expanded = attention_mask.unsqueeze(-1).float()  # [B, N, 1]
+            sum_embeddings = (last_hidden * mask_expanded).sum(dim=1)  # [B, hidden_size]
+            token_counts   = mask_expanded.sum(dim=1).clamp(min=1e-9)  # [B, 1]
+            pooled = sum_embeddings / token_counts                      # [B, hidden_size]
 
         return pooled  # [B, 768]

@@ -2,32 +2,7 @@
 audio_encoder.py
 ────────────────
 Data2Vec-based audio encoder for GLCLAP.
-
-Paper (Section 3.3):
-    "We utilize the same structure and pre-training method as
-     Data2Vec2.0-large. Specifically, the Data2VecAudioModel is employed,
-     which is a transformer-based architecture designed for self-supervised
-     learning of speech representations."
-
-    Audio encoder input:  Xa ∈ R^{B × T × F}  (Mel spectrogram, or raw PCM)
-    Local audio output:   Ea' = fa(Xa) → [B, T//4, hidden_size]
-    Global audio output:  Ea  = mean_pool(Ea') → [B, hidden_size]
-
-    Data2Vec-large hidden_size = 1024.
-    The 4× downsampling comes from the CNN feature extractor in Data2Vec.
-
-Notes:
-    The paper uses a privately pre-trained Data2Vec2.0-large.
-    We default to the public "facebook/data2vec-audio-large-960h" checkpoint
-    as the closest publicly available substitute.
-
-    The HuggingFace Data2VecAudioModel accepts raw waveform (float32, [B, T])
-    through Wav2Vec2Processor and returns last_hidden_state [B, T', D].
-    T' ≈ T // (stride_product_of_CNN_layers) ≈ T // 320 for 16kHz audio.
-
-    TODO: Verify exact downsampling factor with the private checkpoint.
-          Paper states T//4 for mel input; HF model may differ.
-          If mel features are used as input, a custom CNN frontend must be added.
+(Adds an extra 4× pooling downsampling after HF model output)
 """
 
 from __future__ import annotations
@@ -36,41 +11,69 @@ import torch
 import torch.nn as nn
 from transformers import Data2VecAudioModel
 
+from .projections import AttentionPooling
+
 
 class AudioEncoder(nn.Module):
     """
-    Wraps a HuggingFace Data2VecAudioModel.
-
-    Accepts raw waveform tensors (float32, values in [-1, 1]).
-    Returns both local (frame-level) and global (mean-pooled) embeddings.
+    Wraps HF Data2VecAudioModel and adds an optional extra pooling downsampling.
 
     Args:
-        model_name:    HuggingFace model ID for Data2Vec audio.
-        freeze_layers: Freeze bottom-N transformer layers (0 = train all).
+        model_name:           HuggingFace model ID for Data2Vec audio.
+        freeze_layers:        Freeze bottom-N transformer layers (0 = train all).
+        post_downsample_rate: Extra pooling factor after HF output (default 4).
+                              Set to 1 to disable.
+        use_attention_pooling: If True, replace mean pooling with AttentionPooling
+                              (arXiv:2505.19179). Default False for backward compat.
 
     Input:
         waveform:          [B, T_samples]  — raw PCM, float32
         attention_mask:    [B, T_samples]  — optional, 1=valid sample, 0=pad
 
     Outputs:
-        local_emb:  [B, T', hidden_size]  — frame-level features (Ea')
-        global_emb: [B, hidden_size]      — mean-pooled over T' (Ea)
+        local_emb:  [B, T'', hidden_size]  — frame-level features (Ea')
+        global_emb: [B, hidden_size]       — pooled over T'' (Ea)
 
-    where T' = T_samples // downsampling_factor  (≈T//320 for HF model,
-    or T//4 if using a mel-based frontend — see TODO above).
+    where:
+        T'   = T_samples // (HF downsampling factor)  (~T/320)
+        T''  = T' // post_downsample_rate
     """
 
     def __init__(
         self,
         model_name: str = "facebook/data2vec-audio-large-960h",
         freeze_layers: int = 0,
+        post_downsample_rate: int = 4,
+        use_attention_pooling: bool = False,
     ) -> None:
         super().__init__()
         self.model = Data2VecAudioModel.from_pretrained(model_name)
         self.hidden_size: int = self.model.config.hidden_size  # 1024 for large
+        self.post_downsample_rate = post_downsample_rate
+        self.use_attention_pooling = use_attention_pooling
 
         if freeze_layers > 0:
             self._freeze_bottom_layers(freeze_layers)
+
+        # Extra pooling layer (applied on time dimension)
+        if post_downsample_rate > 1:
+            self.pool = nn.AvgPool1d(
+                kernel_size=post_downsample_rate,
+                stride=post_downsample_rate,
+                ceil_mode=False,          # Discard incomplete trailing window
+            )
+        else:
+            self.pool = nn.Identity()
+
+        # Attention Pooling (arXiv:2505.19179) to replace mean pooling
+        if use_attention_pooling:
+            self.attn_pool = AttentionPooling(
+                hidden_size=self.hidden_size,
+                num_heads=1,
+                attn_dim=self.hidden_size,
+            )
+        else:
+            self.attn_pool = None
 
     def _freeze_bottom_layers(self, n: int) -> None:
         """Freeze the CNN feature extractor and bottom-n transformer layers."""
@@ -98,18 +101,30 @@ class AudioEncoder(nn.Module):
             attention_mask: [B, T_samples]  — optional padding mask
 
         Returns:
-            local_emb:  [B, T', hidden_size]  — Ea' in the paper
-            global_emb: [B, hidden_size]      — Ea in the paper
-
-        Internal shapes:
-            outputs.last_hidden_state: [B, T', hidden_size]
-            global_emb via mean over dim=1: [B, hidden_size]
+            local_emb:  [B, T'', hidden_size]  — after extra pooling
+            global_emb: [B, hidden_size]
         """
+        # Step 1: HF model forward
         outputs = self.model(
-            input_values=waveform,          # [B, T_samples]
-            attention_mask=attention_mask,  # [B, T_samples] or None
+            input_values=waveform,
+            attention_mask=attention_mask,
         )
         local_emb = outputs.last_hidden_state   # [B, T', hidden_size]
-        global_emb = local_emb.mean(dim=1)      # [B, hidden_size]
 
-        return local_emb, global_emb            # ([B, T', D], [B, D])
+        # Step 2: Extra pooling downsampling (if enabled)
+        if self.post_downsample_rate > 1:
+            # local_emb: [B, T', D] -> permute to [B, D, T'] for Conv1d pooling
+            local_emb = local_emb.permute(0, 2, 1)          # [B, D, T']
+            local_emb = self.pool(local_emb)                # [B, D, T'']
+            local_emb = local_emb.permute(0, 2, 1)          # [B, T'', D]
+
+        # Step 3: Global embedding via pooling over time
+        if self.attn_pool is not None:
+            global_emb = self.attn_pool(local_emb)          # [B, D]
+        else:
+            global_emb = local_emb.mean(dim=1)              # [B, D]
+
+        return local_emb, global_emb
+    
+#CTC头约束
+#解冻
