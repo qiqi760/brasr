@@ -162,7 +162,7 @@ def plot_results(
         ax.grid(True, linestyle="--", alpha=0.6)
         ax.set_xticks(xs)
         ax.set_xticklabels(labels, rotation=45, ha="right")
-
+ 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     save_path = f"{output_path}.{save_format}"
     plt.savefig(save_path, dpi=300, bbox_inches="tight")

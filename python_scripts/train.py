@@ -269,7 +269,7 @@ def main() -> None:
 
     if distributed:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank,
-                    find_unused_parameters=True)
+                    find_unused_parameters=False)
 
     # ── 修改处：构建 val_eval_config 传给 Trainer ────────────────────
     val_eval_config = None

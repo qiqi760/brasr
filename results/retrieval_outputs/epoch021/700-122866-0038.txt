@@ -1,4 +1,0 @@
-gendarme
-prophylactic
-misinterpretations
-mammiferous

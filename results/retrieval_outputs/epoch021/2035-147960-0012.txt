@@ -1,3 +1,0 @@
-squinting
-hoisting
-fluff

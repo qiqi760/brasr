@@ -208,7 +208,7 @@ def compute_bwer(
         raise ValueError(
             "hypotheses, references, and bias_lists must have equal length"
         )
-
+ 
     # Build per-utterance bias-word sets (split phrases into individual words)
     utterance_bias_sets: list[set[str]] = []
     for bias_list in bias_lists:

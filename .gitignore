@@ -39,3 +39,14 @@ Thumbs.db
 
 # ── Misc ──
 sleep_gpu.sh
+
+# ── Datasets (large files) ──
+dev-clean/
+train-clean-100/
+
+# ── Experiment outputs ──
+results/
+logs/
+
+# ── Dataset checkpoints ──
+dataset/checkpoints_libri/

@@ -95,11 +95,16 @@ class TextEncoder(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        detach_body: bool = False,
     ) -> torch.Tensor:
         """
         Args:
             input_ids:      [B, N]  — token indices
             attention_mask: [B, N]  — 1 = real token, 0 = padding
+            detach_body:    If True, run the frozen BERT body in torch.no_grad()
+                            so activations are not retained, but AttentionPooling
+                            (if present) still receives gradients.  Used when
+                            ``detach_encoders=True`` in GLCLAP.
 
         Returns:
             pooled: [B, hidden_size]  — masked mean over token dimension
@@ -110,11 +115,19 @@ class TextEncoder(nn.Module):
             sum_embeddings: [B, hidden_size]
             pooled: [B, hidden_size]
         """
-        outputs = self.bert(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        last_hidden = outputs.last_hidden_state  # [B, N, hidden_size]
+        if detach_body:
+            with torch.no_grad():
+                outputs = self.bert(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                )
+                last_hidden = outputs.last_hidden_state  # [B, N, hidden_size]
+        else:
+            outputs = self.bert(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            last_hidden = outputs.last_hidden_state  # [B, N, hidden_size]
 
         if self.attn_pool is not None:
             # Attention Pooling (arXiv:2505.19179)

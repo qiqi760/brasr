@@ -148,11 +148,12 @@ class GLCLAP(nn.Module):
         Returns:
             [B, embed_dim]  — L2-normalised
         """
-        if self.detach_encoders:
-            with torch.no_grad():
-                pooled = self.text_encoder(input_ids, attention_mask)  # [B, 768]
-        else:
-            pooled = self.text_encoder(input_ids, attention_mask)
+        # detach_body=True runs the frozen BERT inside torch.no_grad() while
+        # leaving AttentionPooling (if any) on the computation graph so it
+        # still receives gradients.
+        pooled = self.text_encoder(
+            input_ids, attention_mask, detach_body=self.detach_encoders
+        )  # [B, 768]
         return self.text_proj(pooled)                              # [B, D]
 
     def _encode_with_dedup(
@@ -223,11 +224,11 @@ class GLCLAP(nn.Module):
             When pool=True:  [B, embed_dim]
             When pool=False: ([B, T', embed_dim], [B, embed_dim])
         """
-        if self.detach_encoders:
-            with torch.no_grad():
-                local_emb, global_emb = self.audio_encoder(waveform, attention_mask)
-        else:
-            local_emb, global_emb = self.audio_encoder(waveform, attention_mask)
+        # detach_body=True runs the frozen Data2Vec body inside torch.no_grad()
+        # while leaving AttentionPooling (if any) on the computation graph. 
+        local_emb, global_emb = self.audio_encoder(
+            waveform, attention_mask, detach_body=self.detach_encoders
+        )
         # local_emb:  [B, T', hidden_size]
         # global_emb: [B, hidden_size]
 

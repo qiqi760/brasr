@@ -218,7 +218,7 @@ def main() -> None:
             all_ground_truths.append(gt_entities)
             top1_ground_truths.append(gt_entities[0] if gt_entities else "")
 
-            """
+            """ 
             # [新增] 收集 B-WER 数据（所有样本，含空 ground-truth）
             all_references.append(item.get("text", ""))
             if asr_hypotheses:

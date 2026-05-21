@@ -1,4 +1,0 @@
-hypsometers
-rosalind
-legacied
-conqueror

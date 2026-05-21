@@ -94,31 +94,53 @@ class AudioEncoder(nn.Module):
         self,
         waveform: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
+        detach_body: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             waveform:       [B, T_samples]  — raw PCM float32
             attention_mask: [B, T_samples]  — optional padding mask
+            detach_body:    If True, run the frozen Data2Vec body (including
+                            the extra downsampling pool) in torch.no_grad()
+                            so activations are not retained, but AttentionPooling
+                            (if present) still receives gradients.  Used when
+                            ``detach_encoders=True`` in GLCLAP.
 
         Returns:
             local_emb:  [B, T'', hidden_size]  — after extra pooling
             global_emb: [B, hidden_size]
         """
         # Step 1: HF model forward
-        outputs = self.model(
-            input_values=waveform,
-            attention_mask=attention_mask,
-        )
-        local_emb = outputs.last_hidden_state   # [B, T', hidden_size]
+        if detach_body:
+            with torch.no_grad():
+                outputs = self.model(
+                    input_values=waveform,
+                    attention_mask=attention_mask,
+                )
+                local_emb = outputs.last_hidden_state   # [B, T', hidden_size]
 
-        # Step 2: Extra pooling downsampling (if enabled)
-        if self.post_downsample_rate > 1:
-            # local_emb: [B, T', D] -> permute to [B, D, T'] for Conv1d pooling
-            local_emb = local_emb.permute(0, 2, 1)          # [B, D, T']
-            local_emb = self.pool(local_emb)                # [B, D, T'']
-            local_emb = local_emb.permute(0, 2, 1)          # [B, T'', D]
+                # Step 2: Extra pooling downsampling (if enabled)
+                if self.post_downsample_rate > 1:
+                    # local_emb: [B, T', D] -> permute to [B, D, T'] for Conv1d pooling
+                    local_emb = local_emb.permute(0, 2, 1)          # [B, D, T']
+                    local_emb = self.pool(local_emb)                # [B, D, T'']
+                    local_emb = local_emb.permute(0, 2, 1)          # [B, T'', D]
+        else:
+            outputs = self.model(
+                input_values=waveform,
+                attention_mask=attention_mask,
+            )
+            local_emb = outputs.last_hidden_state   # [B, T', hidden_size]
+
+            # Step 2: Extra pooling downsampling (if enabled)
+            if self.post_downsample_rate > 1:
+                # local_emb: [B, T', D] -> permute to [B, D, T'] for Conv1d pooling
+                local_emb = local_emb.permute(0, 2, 1)          # [B, D, T']
+                local_emb = self.pool(local_emb)                # [B, D, T'']
+                local_emb = local_emb.permute(0, 2, 1)          # [B, T'', D]
 
         # Step 3: Global embedding via pooling over time
+        # AttentionPooling runs *outside* no_grad so its parameters get gradients.
         if self.attn_pool is not None:
             global_emb = self.attn_pool(local_emb)          # [B, D]
         else:

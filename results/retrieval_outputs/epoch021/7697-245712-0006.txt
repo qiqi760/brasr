@@ -1,3 +1,0 @@
-idiosyncrasy
-unconditionally
-implicits

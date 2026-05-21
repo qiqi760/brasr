@@ -1,4 +1,0 @@
-decorations
-amphitheatres
-hurd
-indefiniteness

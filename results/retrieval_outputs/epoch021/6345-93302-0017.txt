@@ -1,5 +1,0 @@
-transparency
-ticking
-realistic
-squirming
-halfscore

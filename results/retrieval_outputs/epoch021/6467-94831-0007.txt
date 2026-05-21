@@ -1,5 +1,0 @@
-sockets
-shyly
-crutches
-notoriety
-disgustingness
