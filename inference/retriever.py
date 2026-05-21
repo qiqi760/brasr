@@ -132,14 +132,6 @@ class BiasWordRetriever:
 
         Returns:
             List of selected bias words (subset of self._bias_words).
-
-        Shapes:
-            waveform (after squeeze): [1, T_samples]
-            audio_local:  [1, T', D]  → squeeze → [T', D]
-            Et (bias):    [K, D]
-            Sim:          [K, T']
-            sim_score:    [K]  (max over T')
-            selected:     list of words where sim_score > threshold
         """
         if self._bias_embeddings is None or len(self._bias_words) == 0:
             logger.warning("Bias list is empty. Call set_bias_list() first.")
@@ -155,6 +147,25 @@ class BiasWordRetriever:
                 attention_mask = attention_mask.unsqueeze(0)  # [1, T_samples]
             attention_mask = attention_mask.to(self.device)
 
+        # ── [新增] 全局匹配模式 ──────────────────────────────────────────────
+        # 使用 pool=True 获取全局音频 embedding（经过 AttentionPooling），
+        # 与 bias word 的全局 embedding 直接计算相似度。
+        audio_global = self.model.encode_audio(
+            waveform, attention_mask=attention_mask, pool=True
+        )
+        # audio_global: [1, D]
+        audio_global = audio_global.squeeze(0)  # [D]
+
+        # Similarity: Et [K, D] @ Ea^T [D] → [K]
+        Et = self._bias_embeddings   # [K, D]
+        sim_score = Et @ audio_global  # [K]
+        # ── [新增结束] ──────────────────────────────────────────────────────
+
+        '''
+        # ── [原代码] 帧级检测模式（已注释）───────────────────────────────────
+        # 原来使用 frame-level audio embedding，通过 max-over-time 检测
+        # bias word 在音频中的出现位置。改为全局匹配后不再需要。
+        #
         # Encode audio — no pooling → local frame embeddings
         audio_local, _ = self.model.encode_audio(
             waveform, attention_mask=attention_mask, pool=False
@@ -168,6 +179,8 @@ class BiasWordRetriever:
 
         # Max-pool over time → [K]
         sim_score, _ = Sim.max(dim=-1)  # [K]
+        # ── [原代码结束] ────────────────────────────────────────────────────
+        '''
 
         # Select words above threshold (cap at top_k)
         selected = []
@@ -199,12 +212,6 @@ class BiasWordRetriever:
 
         Returns:
             List of B lists; each inner list contains selected bias words.
-
-        Shapes:
-            audio_local_batch: [B, T', D]
-            Et:                [K, D]
-            Sim:               [B, K, T']  — using einsum
-            sim_scores:        [B, K]      — max over T'
         """
         if self._bias_embeddings is None or len(self._bias_words) == 0:
             B = waveforms.shape[0]
@@ -214,6 +221,21 @@ class BiasWordRetriever:
         if attention_mask is not None:
             attention_mask = attention_mask.to(self.device)
 
+        # ── [新增] 全局匹配模式 ──────────────────────────────────────────────
+        # 使用 pool=True 获取全局音频 embedding（经过 AttentionPooling）。
+        audio_global_batch = self.model.encode_audio(
+            waveforms, attention_mask=attention_mask, pool=True
+        )
+        # audio_global_batch: [B, D]
+
+        Et = self._bias_embeddings    # [K, D]
+
+        # Sim[b, k] = Et[k] · audio_global[b]
+        sim_scores = torch.einsum("kd, bd -> bk", Et, audio_global_batch)  # [B, K]
+        # ── [新增结束] ──────────────────────────────────────────────────────
+ 
+        '''
+        # ── [原代码] 帧级检测模式（已注释）───────────────────────────────────
         audio_local_batch, _ = self.model.encode_audio(
             waveforms, attention_mask=attention_mask, pool=False
         )
@@ -224,6 +246,8 @@ class BiasWordRetriever:
         # Sim[b, k, t] = Et[k] · audio_local[b, t]
         Sim = torch.einsum("kd, btd -> bkt", Et, audio_local_batch)  # [B, K, T']
         sim_scores, _ = Sim.max(dim=-1)  # [B, K]
+        # ── [原代码结束] ────────────────────────────────────────────────────
+        '''
 
         results = []
         for b in range(sim_scores.shape[0]):
