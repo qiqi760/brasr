@@ -199,12 +199,7 @@ class ProjectionHead(nn.Module):
 
         if dim_feedforward is None:
             dim_feedforward = out_dim * 4
-
-        # ── 原代码 v0：单层线性投影（已注释）────────────────
-        # 原实现为单层线性投影（无激活函数，无 bias）
-        # self.linear = nn.Linear(in_dim, out_dim, bias=False)
-        # ──────────────────────────────────────────────────
-
+        '''
         # ── 原代码 v1：2-layer MLP + ReLU─────────
         # 仿照 dasheng-glap 的 projector head 结构：
         #   nn.Sequential(Linear → ReLU → Linear)
@@ -215,6 +210,7 @@ class ProjectionHead(nn.Module):
         )
         # ──────────────────────────────────────────────────
         '''
+        
         # ── 修改处 v2：替换为两层 Transformer 架构 ──────────
         # 1) 先将输入特征维度映射到 Transformer 的 d_model
         self.input_proj = nn.Linear(in_dim, out_dim, bias=True)
@@ -255,7 +251,7 @@ class ProjectionHead(nn.Module):
         # x: [B, seq_len, in_dim]
         x = self.input_proj(x)  # [B, seq_len, out_dim]
 
-        # 添加可学习的位置编码
+        # 添加可学习的位置编码 
         seq_len = x.size(1)
         positions = torch.arange(seq_len, device=x.device)  # [seq_len]
         pos_emb = self.pos_embed(positions).unsqueeze(0)     # [1, seq_len, out_dim]
@@ -271,10 +267,11 @@ class ProjectionHead(nn.Module):
         if self.normalize:
             x = F.normalize(x, p=2, dim=-1)  # [..., out_dim]
         return x
-    '''
     
+    '''
     def forward(self, x):
         x = self.projection(x)
         if self.normalize:
             x = F.normalize(x, p=2, dim=-1)  # [..., out_dim]
         return x
+    '''
